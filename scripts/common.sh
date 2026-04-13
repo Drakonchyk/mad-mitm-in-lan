@@ -59,9 +59,200 @@ vm_disk_path() {
   printf '%s/%s.qcow2\n' "$STORAGE_ROOT" "$name"
 }
 
+canonical_path() {
+  readlink -m -- "$1"
+}
+
+pool_name_for_path() {
+  local wanted actual pool xml_path
+  wanted="$(canonical_path "$1")"
+
+  while IFS= read -r pool; do
+    pool="$(printf '%s' "$pool" | xargs)"
+    [[ -n "$pool" ]] || continue
+    xml_path="$(
+      run_hypervisor virsh -c "${LIBVIRT_URI}" pool-dumpxml "$pool" 2>/dev/null \
+        | awk -F'[<>]' '/<path>/ { print $3; exit }'
+    )"
+    [[ -n "$xml_path" ]] || continue
+    actual="$(canonical_path "$xml_path")"
+    if [[ "$actual" == "$wanted" ]]; then
+      printf '%s\n' "$pool"
+      return 0
+    fi
+  done < <(run_hypervisor virsh -c "${LIBVIRT_URI}" pool-list --all --name 2>/dev/null || true)
+
+  return 1
+}
+
+generated_root() {
+  printf '%s/generated\n' "$LAB_DIR"
+}
+
 generated_dir() {
   local name="$1"
   printf '%s/generated/%s\n' "$LAB_DIR" "$name"
+}
+
+results_root() {
+  printf '%s/results\n' "$LAB_DIR"
+}
+
+automation_key_dir() {
+  printf '%s/generated/ssh\n' "$LAB_DIR"
+}
+
+automation_private_key() {
+  printf '%s/lab_automation_ed25519\n' "$(automation_key_dir)"
+}
+
+automation_public_key() {
+  printf '%s.pub\n' "$(automation_private_key)"
+}
+
+ensure_automation_ssh_key() {
+  local key
+  key="$(automation_private_key)"
+
+  if [[ -f "$key" && -f "$(automation_public_key)" ]]; then
+    return 0
+  fi
+
+  require_cmd ssh-keygen
+  mkdir -p "$(automation_key_dir)"
+  ssh-keygen -q -t ed25519 -N '' -f "$key" -C "mitm-lab-automation" >/dev/null
+}
+
+cidr_addr() {
+  local cidr="$1"
+  printf '%s\n' "${cidr%/*}"
+}
+
+gateway_upstream_ip() {
+  local ip
+
+  ip="$(
+    run_hypervisor virsh -c "${LIBVIRT_URI}" net-dhcp-leases default 2>/dev/null \
+      | awk -v mac="${GATEWAY_UP_MAC,,}" '
+          BEGIN { IGNORECASE = 1 }
+          index(tolower($0), mac) {
+            for (i = 1; i <= NF; i++) {
+              if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\/[0-9]+$/) {
+                sub(/\/.*/, "", $i)
+                print $i
+                exit
+              }
+            }
+          }
+        '
+  )"
+
+  if [[ -z "$ip" ]]; then
+    warn "Could not determine ${GATEWAY_NAME} upstream IP from the default network DHCP leases"
+    return 1
+  fi
+
+  printf '%s\n' "$ip"
+}
+
+lab_host_ip() {
+  local host="$1"
+
+  case "$host" in
+    gateway)
+      gateway_upstream_ip
+      ;;
+    victim)
+      cidr_addr "${VICTIM_CIDR}"
+      ;;
+    attacker)
+      cidr_addr "${ATTACKER_CIDR}"
+      ;;
+    *)
+      warn "Unknown lab host: ${host}"
+      return 1
+      ;;
+  esac
+}
+
+lab_ssh() {
+  local host="$1"
+  shift
+
+  ensure_automation_ssh_key
+
+  local key addr gateway_ip proxy_cmd
+  key="$(automation_private_key)"
+  addr="$(lab_host_ip "$host")"
+  local ssh_args=(
+    -i "$key"
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+    -o LogLevel=ERROR
+    -o BatchMode=yes
+    -o ConnectTimeout=5
+  )
+
+  if [[ "$host" == "gateway" ]]; then
+    ssh "${ssh_args[@]}" "${LAB_USER}@${addr}" "$@"
+    return
+  fi
+
+  gateway_ip="$(gateway_upstream_ip)"
+  printf -v proxy_cmd 'ssh -i %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=5 -W %%h:%%p %q' \
+    "$key" "${LAB_USER}@${gateway_ip}"
+  ssh "${ssh_args[@]}" -o "ProxyCommand=${proxy_cmd}" "${LAB_USER}@${addr}" "$@"
+}
+
+lab_scp_from() {
+  local host="$1"
+  local remote_path="$2"
+  local local_path="$3"
+
+  ensure_automation_ssh_key
+
+  local key addr gateway_ip proxy_cmd
+  key="$(automation_private_key)"
+  addr="$(lab_host_ip "$host")"
+  local scp_args=(
+    -i "$key"
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+    -o LogLevel=ERROR
+    -o BatchMode=yes
+    -o ConnectTimeout=5
+  )
+
+  if [[ "$host" == "gateway" ]]; then
+    scp "${scp_args[@]}" "${LAB_USER}@${addr}:${remote_path}" "${local_path}"
+    return
+  fi
+
+  gateway_ip="$(gateway_upstream_ip)"
+  printf -v proxy_cmd 'ssh -i %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=5 -W %%h:%%p %q' \
+    "$key" "${LAB_USER}@${gateway_ip}"
+  scp "${scp_args[@]}" -o "ProxyCommand=${proxy_cmd}" "${LAB_USER}@${addr}:${remote_path}" "${local_path}"
+}
+
+wait_for_lab_ssh() {
+  local host="$1"
+  local attempts="${2:-60}"
+  local delay="${3:-5}"
+  local try
+
+  for ((try = 1; try <= attempts; try++)); do
+    if lab_ssh "$host" true >/dev/null 2>&1; then
+      info "SSH is ready on ${host} (${try}/${attempts})"
+      return 0
+    fi
+    if (( try == 1 || try % 6 == 0 || try == attempts )); then
+      info "Still waiting for SSH on ${host} (${try}/${attempts}, retrying every ${delay}s)"
+    fi
+    sleep "$delay"
+  done
+
+  warn "Timed out waiting for SSH access to ${host}"
+  return 1
 }
 
 indent_file() {

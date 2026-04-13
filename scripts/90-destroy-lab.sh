@@ -37,12 +37,20 @@ done
 
 for net in "${LAB_NAME}" default; do
   if run_hypervisor virsh -c "${LIBVIRT_URI}" net-info "$net" >/dev/null 2>&1; then
+    PERSISTENT="$(
+      run_hypervisor virsh -c "${LIBVIRT_URI}" net-info "$net" \
+        | awk '/^Persistent:/ {print $2}'
+    )"
     if run_hypervisor virsh -c "${LIBVIRT_URI}" net-info "$net" | grep -q '^Active:.*yes'; then
       info "Destroying network $net"
       run_hypervisor virsh -c "${LIBVIRT_URI}" net-destroy "$net" || true
     fi
-    info "Undefining network $net"
-    run_hypervisor virsh -c "${LIBVIRT_URI}" net-undefine "$net" || true
+    if [[ "${PERSISTENT}" == "yes" ]]; then
+      info "Undefining network $net"
+      run_hypervisor virsh -c "${LIBVIRT_URI}" net-undefine "$net" || true
+    else
+      info "Network $net was transient and has been removed by destroy"
+    fi
   fi
 done
 
@@ -56,13 +64,18 @@ for disk in \
   fi
 done
 
-if run_hypervisor virsh -c "${LIBVIRT_URI}" pool-info "${STORAGE_POOL_NAME}" >/dev/null 2>&1; then
-  if run_hypervisor virsh -c "${LIBVIRT_URI}" pool-info "${STORAGE_POOL_NAME}" | grep -q '^State:.*running'; then
-    info "Destroying storage pool ${STORAGE_POOL_NAME}"
-    run_hypervisor virsh -c "${LIBVIRT_URI}" pool-destroy "${STORAGE_POOL_NAME}" || true
+POOL_NAME="$(pool_name_for_path "${STORAGE_ROOT}" || true)"
+if [[ -z "${POOL_NAME}" ]] && run_hypervisor virsh -c "${LIBVIRT_URI}" pool-info "${STORAGE_POOL_NAME}" >/dev/null 2>&1; then
+  POOL_NAME="${STORAGE_POOL_NAME}"
+fi
+
+if [[ -n "${POOL_NAME}" ]] && run_hypervisor virsh -c "${LIBVIRT_URI}" pool-info "${POOL_NAME}" >/dev/null 2>&1; then
+  if run_hypervisor virsh -c "${LIBVIRT_URI}" pool-info "${POOL_NAME}" | grep -q '^State:.*running'; then
+    info "Destroying storage pool ${POOL_NAME}"
+    run_hypervisor virsh -c "${LIBVIRT_URI}" pool-destroy "${POOL_NAME}" || true
   fi
-  info "Undefining storage pool ${STORAGE_POOL_NAME}"
-  run_hypervisor virsh -c "${LIBVIRT_URI}" pool-undefine "${STORAGE_POOL_NAME}" || true
+  info "Undefining storage pool ${POOL_NAME}"
+  run_hypervisor virsh -c "${LIBVIRT_URI}" pool-undefine "${POOL_NAME}" || true
 fi
 
 if [[ -d "${STORAGE_ROOT}" ]]; then

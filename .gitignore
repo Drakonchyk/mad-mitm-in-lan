@@ -1,6 +1,7 @@
 # Generated lab artifacts
 /generated/
 /storage/
+/results/
 
 # VM and disk artifacts
 *.qcow2
@@ -12,6 +13,9 @@
 *.tmp
 *.bak
 *.pid
+*.pyc
+*.zip
+__pycache__/
 
 # Editor and OS clutter
 .DS_Store

@@ -4,12 +4,15 @@ set -euo pipefail
 # shellcheck source=/dev/null
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
+ensure_automation_ssh_key
+
 mkdir -p "$(generated_dir gateway)" "$(generated_dir victim)" "$(generated_dir attacker)"
 TMP_RENDER_DIR="${LAB_DIR}/generated/rendered"
 mkdir -p "${TMP_RENDER_DIR}"
 
 IFS=' ' read -r -a DETECTOR_DOMAIN_ARRAY <<< "${DETECTOR_DOMAINS}"
 PYTHON_DOMAIN_LIST="$(printf "'%s', " "${DETECTOR_DOMAIN_ARRAY[@]}" | sed 's/, $//')"
+AUTOMATION_SSH_KEY="$(< "$(automation_public_key)")"
 
 cat > "${TMP_RENDER_DIR}/mitm-lab-gateway.sh" <<EOF
 #!/usr/bin/env bash
@@ -226,6 +229,7 @@ package_update: true
 package_upgrade: false
 timezone: ${TIMEZONE}
 packages:
+  - openssh-server
   - tcpdump
   - tshark
   - iproute2
@@ -242,6 +246,8 @@ users:
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: false
+    ssh_authorized_keys:
+      - ${AUTOMATION_SSH_KEY}
 ssh_pwauth: true
 chpasswd:
   list: |
@@ -305,6 +311,7 @@ package_update: true
 package_upgrade: false
 timezone: ${TIMEZONE}
 packages:
+  - openssh-server
   - tcpdump
   - tshark
   - iproute2
@@ -322,6 +329,8 @@ users:
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: false
+    ssh_authorized_keys:
+      - ${AUTOMATION_SSH_KEY}
 ssh_pwauth: true
 chpasswd:
   list: |
@@ -374,6 +383,7 @@ package_update: true
 package_upgrade: false
 timezone: ${TIMEZONE}
 packages:
+  - openssh-server
   - tcpdump
   - tshark
   - iproute2
@@ -392,6 +402,8 @@ users:
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: false
+    ssh_authorized_keys:
+      - ${AUTOMATION_SSH_KEY}
 ssh_pwauth: true
 chpasswd:
   list: |

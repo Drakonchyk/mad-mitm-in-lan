@@ -14,7 +14,7 @@ It also renders repeatable lab assets for:
 - static guest network config
 - gateway NAT and DNS forwarding
 - a simple victim-side detector service
-- libvirt provisioning and teardown
+- libvirt provisioning, experiment capture, and teardown
 
 ## Important
 
@@ -23,6 +23,7 @@ It also renders repeatable lab assets for:
 - The scripts target system libvirt at `qemu:///system`.
 - Downloaded images live under `storage/`.
 - Rendered cloud-init and helper files live under `generated/`.
+- Experiment artifacts are written under `results/`.
 - If your shell cannot talk to system libvirt directly yet, the scripts fall back to `sg libvirt -c ...`.
 
 ## Project Layout
@@ -30,7 +31,7 @@ It also renders repeatable lab assets for:
 - `lab.conf` - main lab configuration
 - `Makefile` - polished entry point for common lab tasks
 - `libvirt/*.xml` - network definitions
-- `scripts/` - numbered setup stages plus start, status, and teardown helpers
+- `scripts/` - numbered setup stages plus experiment, status, and teardown helpers
 
 ## Default Network Plan
 
@@ -98,7 +99,7 @@ make status
 
 If direct libvirt access still fails from your current shell, log out and back in once, or use the `sg libvirt -c ...` examples below.
 
-The repo ignores `generated/` and `storage/` so local lab artifacts do not clutter version control.
+The repo ignores `generated/`, `storage/`, and `results/` so local lab artifacts do not clutter version control.
 
 Useful day-to-day commands:
 
@@ -107,8 +108,30 @@ make prereqs
 make setup
 make start
 make status
+make baseline
 make destroy
 ```
+
+If you created the VMs before the automation key was added, run `make rebuild` once so the experiment scripts can SSH into the guests reproducibly.
+
+## Experiment Workflow
+
+The repo now automates the safe and repeatable parts of the methodology:
+
+- `make baseline` starts the lab if needed, runs a clean traffic pass, saves packet captures plus ARP and DNS artifacts, and prints a short summary
+- `make record-scenario NAME=arp-mitm DURATION=60` opens a capture window for a manual scenario while the victim generates background traffic
+- `make summarize` prints a compact summary for everything under `results/`
+
+Examples:
+
+```bash
+make baseline
+make record-scenario NAME=arp-mitm DURATION=90 NOTE="Manual ARP MITM run in isolated lab"
+make record-scenario NAME=arp-mitm-dns DURATION=90 NOTE="Manual ARP + DNS scenario in isolated lab"
+make summarize
+```
+
+The attack and mitigation actions themselves are intentionally left manual inside the isolated lab, but the setup, traffic generation, capture collection, and result summaries are scripted so the runs stay reproducible.
 
 ## What Gets Configured
 

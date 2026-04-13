@@ -12,11 +12,13 @@ STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 info "Starting automated baseline run"
 mkdir -p "$(results_root)"
 start_lab_and_wait_for_access
+prepare_victim_detector
 
 DETECTOR_OFFSET="$(remote_file_size victim /var/log/mitm-lab-detector.jsonl)"
 DNSMASQ_OFFSET="$(remote_file_size gateway /var/log/dnsmasq-mitm-lab.log)"
 
 save_common_state
+save_tool_versions
 
 start_remote_capture gateway any gateway >/dev/null
 start_remote_capture victim vnic0 victim >/dev/null
@@ -42,13 +44,17 @@ stop_remote_capture victim victim
 stop_remote_capture gateway gateway
 
 save_capture_files
+summarize_saved_pcaps
 capture_remote_command victim "${RUN_DIR}/victim/ip-neigh-after.txt" "ip neigh show"
 capture_remote_command gateway "${RUN_DIR}/gateway/ip-neigh-after.txt" "ip neigh show"
 capture_remote_delta victim /var/log/mitm-lab-detector.jsonl "${DETECTOR_OFFSET}" "${RUN_DIR}/victim/detector.delta.jsonl"
 capture_remote_delta gateway /var/log/dnsmasq-mitm-lab.log "${DNSMASQ_OFFSET}" "${RUN_DIR}/gateway/dnsmasq.delta.log"
+fetch_remote_file victim "/var/lib/mitm-lab-detector/state.json" "${RUN_DIR}/victim/detector.state.json" || true
 
 ENDED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 write_run_meta "automated-baseline" "${STARTED_AT}" "${ENDED_AT}" "Clean traffic run generated entirely by the host automation"
+analyze_saved_pcaps_with_suricata
+explain_saved_run
 
 info "Baseline artifacts saved under ${RUN_DIR}"
 write_summary "${RUN_DIR}"

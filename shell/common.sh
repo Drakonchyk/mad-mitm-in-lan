@@ -85,10 +85,6 @@ pool_name_for_path() {
   return 1
 }
 
-generated_root() {
-  printf '%s/generated\n' "$LAB_DIR"
-}
-
 generated_dir() {
   local name="$1"
   printf '%s/generated/%s\n' "$LAB_DIR" "$name"
@@ -128,8 +124,8 @@ cidr_addr() {
   printf '%s\n' "${cidr%/*}"
 }
 
-gateway_upstream_ip() {
-  local ip
+query_gateway_upstream_ip() {
+  local ip=""
 
   ip="$(
     run_hypervisor virsh -c "${LIBVIRT_URI}" net-dhcp-leases default 2>/dev/null \
@@ -148,7 +144,49 @@ gateway_upstream_ip() {
   )"
 
   if [[ -z "$ip" ]]; then
-    warn "Could not determine ${GATEWAY_NAME} upstream IP from the default network DHCP leases"
+    ip="$(
+      run_hypervisor virsh -c "${LIBVIRT_URI}" domifaddr "${GATEWAY_NAME}" --source lease 2>/dev/null \
+        | awk -v mac="${GATEWAY_UP_MAC,,}" '
+            BEGIN { IGNORECASE = 1 }
+            index(tolower($0), mac) {
+              for (i = 1; i <= NF; i++) {
+                if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\/[0-9]+$/) {
+                  sub(/\/.*/, "", $i)
+                  print $i
+                  exit
+                }
+              }
+            }
+          '
+    )"
+  fi
+
+  printf '%s\n' "$ip"
+}
+
+gateway_upstream_ip() {
+  local ip attempts delay try
+
+  attempts="${GATEWAY_IP_LOOKUP_ATTEMPTS:-12}"
+  delay="${GATEWAY_IP_LOOKUP_DELAY_SECONDS:-5}"
+
+  for ((try = 1; try <= attempts; try++)); do
+    ip="$(query_gateway_upstream_ip)"
+    if [[ -n "$ip" ]]; then
+      printf '%s\n' "$ip"
+      return 0
+    fi
+
+    if (( try < attempts )); then
+      if (( try == 1 || try == attempts - 1 || try % 3 == 0 )); then
+        info "Waiting for ${GATEWAY_NAME} upstream DHCP lease (${try}/${attempts})"
+      fi
+      sleep "$delay"
+    fi
+  done
+
+  if [[ -z "$ip" ]]; then
+    warn "Could not determine ${GATEWAY_NAME} upstream IP from libvirt DHCP lease data"
     return 1
   fi
 
@@ -234,6 +272,36 @@ lab_scp_from() {
   scp "${scp_args[@]}" -o "ProxyCommand=${proxy_cmd}" "${LAB_USER}@${addr}:${remote_path}" "${local_path}"
 }
 
+lab_scp_to() {
+  local host="$1"
+  local local_path="$2"
+  local remote_path="$3"
+
+  ensure_automation_ssh_key
+
+  local key addr gateway_ip proxy_cmd
+  key="$(automation_private_key)"
+  addr="$(lab_host_ip "$host")"
+  local scp_args=(
+    -i "$key"
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+    -o LogLevel=ERROR
+    -o BatchMode=yes
+    -o ConnectTimeout=5
+  )
+
+  if [[ "$host" == "gateway" ]]; then
+    scp "${scp_args[@]}" "${local_path}" "${LAB_USER}@${addr}:${remote_path}"
+    return
+  fi
+
+  gateway_ip="$(gateway_upstream_ip)"
+  printf -v proxy_cmd 'ssh -i %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=5 -W %%h:%%p %q' \
+    "$key" "${LAB_USER}@${gateway_ip}"
+  scp "${scp_args[@]}" -o "ProxyCommand=${proxy_cmd}" "${local_path}" "${LAB_USER}@${addr}:${remote_path}"
+}
+
 wait_for_lab_ssh() {
   local host="$1"
   local attempts="${2:-60}"
@@ -253,9 +321,4 @@ wait_for_lab_ssh() {
 
   warn "Timed out waiting for SSH access to ${host}"
   return 1
-}
-
-indent_file() {
-  local file="$1"
-  sed 's/^/      /' "$file"
 }

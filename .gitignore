@@ -2,6 +2,7 @@
 /generated/
 /storage/
 /results/
+/sources/
 
 # VM and disk artifacts
 *.qcow2

@@ -1,0 +1,12 @@
+[Unit]
+Description=MITM lab gateway NAT bootstrap
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mitm-lab-gateway.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

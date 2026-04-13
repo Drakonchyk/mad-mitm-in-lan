@@ -32,7 +32,10 @@ It also renders repeatable lab assets for:
 - `Makefile` - polished entry point for common lab tasks
 - `dangerous-scenarios/` - clearly marked wrappers for recording manual high-risk lab scenarios
 - `libvirt/*.xml` - network definitions
-- `scripts/` - numbered setup stages plus experiment, status, and teardown helpers
+- `shell/` - Bash scripts for host orchestration plus the guest gateway bootstrap script
+- `python/` - Python utilities such as the guest detector source, config helpers, and result summarization
+- `services/` - static systemd unit files copied into guests
+- `config/` - static config files copied into guests
 
 ## Default Network Plan
 
@@ -57,6 +60,15 @@ Recommended extra package for easier cloud image work:
 ```bash
 sudo apt install cloud-image-utils
 ```
+
+Optional host-side comparison tooling:
+
+```bash
+sudo apt install suricata
+```
+
+If `suricata` is installed and `/etc/suricata/suricata.yaml` exists, runs automatically analyze the saved `victim.pcap` and write artifacts under `results/<run>/suricata/`.
+That offline pass now also generates a small lab-specific ruleset per run so Suricata can alert on ICMP redirects from the attacker and DNS answers that point to the attacker IP.
 
 If needed, add your user to the libvirt group:
 
@@ -110,8 +122,11 @@ make setup
 make start
 make status
 make baseline
+make smoke-test
 make destroy
 ```
+
+Keep `SMOKE_DURATION_SECONDS` at `8` or higher. Shorter windows can miss the attack simply because the ARP poison and DNS spoof do not have enough time to become visible in the victim probes.
 
 If you created the VMs before the automation key was added, run `make rebuild` once so the experiment scripts can SSH into the guests reproducibly.
 
@@ -120,13 +135,22 @@ If you created the VMs before the automation key was added, run `make rebuild` o
 The repo now automates the safe and repeatable parts of the methodology:
 
 - `make baseline` starts the lab if needed, runs a clean traffic pass, saves packet captures plus ARP and DNS artifacts, and prints a short summary
+- `make smoke-test` runs a short baseline plus short automated ARP and ARP+DNS checks to validate the end-to-end research pipeline
 - `make record-scenario NAME=arp-mitm DURATION=60` opens a capture window for a manual scenario while the victim generates background traffic
 - `make summarize` prints a compact summary for everything under `results/`
+
+Key run artifacts to read first:
+
+- `summary.txt` for top-level metrics
+- `victim/detector-explained.txt` for a concise attack timeline from the detector and victim probes
+- `pcap/*.tshark-summary.txt` for quick packet-level comparisons
+- `suricata/` when host-side Suricata is available
 
 Examples:
 
 ```bash
 make baseline
+make smoke-test
 make record-scenario NAME=arp-mitm DURATION=90 NOTE="Manual ARP MITM run in isolated lab"
 make record-scenario NAME=arp-mitm-dns DURATION=90 NOTE="Manual ARP + DNS scenario in isolated lab"
 make summarize
@@ -135,9 +159,9 @@ make summarize
 The attack and mitigation actions themselves are intentionally left manual inside the isolated lab, but the setup, traffic generation, capture collection, and result summaries are scripted so the runs stay reproducible.
 
 ```bash
-./dangerous-scenarios/record-arp-mitm.sh
-./dangerous-scenarios/record-arp-dns.sh
-./dangerous-scenarios/record-mitigation.sh
+./shell/dangerous/record-arp-mitm.sh
+./shell/dangerous/record-arp-dns.sh
+./shell/dangerous/record-mitigation.sh
 ```
 
 ## What Gets Configured

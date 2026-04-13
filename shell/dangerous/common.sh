@@ -2,10 +2,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 # shellcheck source=/dev/null
-source "${REPO_ROOT}/scripts/common.sh"
+source "${REPO_ROOT}/shell/experiment-common.sh"
 
 danger_info() {
   printf '[danger] %s\n' "$*"
@@ -22,10 +22,10 @@ confirm_danger_run() {
 
   printf '\n'
   warn "This wrapper is only for the isolated ${LAB_NAME} lab."
-  warn "Do not continue unless you intend to run a manual scenario only inside these VMs."
+  warn "Do not continue unless you intend to run this scenario only inside these VMs."
   read -r -p "Type ${scenario} to continue: " answer
   [[ "${answer}" == "${scenario}" ]] || {
-    warn "Manual scenario aborted"
+    warn "Scenario aborted"
     exit 1
   }
 }
@@ -79,5 +79,26 @@ start_danger_recording() {
 
   danger_info "Manual placeholder: ${placeholder}"
   danger_info "Starting recording window for ${scenario_name}"
-  "${REPO_ROOT}/scripts/80-record-manual-scenario.sh" "${scenario_name}" "${duration}" "${note}"
+  "${REPO_ROOT}/shell/80-record-manual-scenario.sh" "${scenario_name}" "${duration}" "${note}"
+}
+
+start_danger_python_recording() {
+  local scenario_name="$1"
+  local duration="$2"
+  local note="$3"
+  local attack_label="$4"
+  local attack_cmd="$5"
+
+  verify_isolated_lab
+  require_sudo_refresh
+  confirm_danger_run "${scenario_name}"
+  start_lab_and_wait_for_access
+  prepare_attacker_research_workspace
+
+  danger_info "Automated attacker command: ${attack_cmd}"
+  SKIP_LAB_START="1" \
+  ATTACK_JOB_HOST="attacker" \
+  ATTACK_JOB_LABEL="${attack_label}" \
+  ATTACK_JOB_CMD="${attack_cmd}" \
+    "${REPO_ROOT}/shell/80-record-manual-scenario.sh" "${scenario_name}" "${duration}" "${note}"
 }

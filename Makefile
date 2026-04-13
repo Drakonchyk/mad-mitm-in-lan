@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help prereqs networks storage render create-vms start status baseline record-scenario summarize danger-help danger-verify danger-arp-mitm danger-arp-dns danger-mitigation danger-compare setup destroy rebuild
+.PHONY: help prereqs networks storage render create-vms start status baseline smoke-test record-scenario summarize danger-help danger-verify danger-arp-mitm danger-arp-dns danger-arp-mitm-auto danger-arp-dns-auto danger-mitigation danger-compare setup destroy rebuild
 
 help:
 	@printf '%s\n' \
@@ -10,11 +10,12 @@ help:
 		'  make prereqs    Check host prerequisites and libvirt access' \
 		'  make networks   Define and start libvirt networks' \
 		'  make storage    Download base image and prepare storage pool' \
-		'  make render     Generate cloud-init and rendered helper files' \
+		'  make render     Generate cloud-init guest files' \
 		'  make create-vms Create the lab virtual machines' \
 		'  make start      Start all lab VMs' \
 		'  make status     Show lab status and console hints' \
 		'  make baseline   Run an automated clean-traffic experiment and collect artifacts' \
+		'  make smoke-test Run a short end-to-end validation of baseline and automated dangerous flows' \
 		'  make record-scenario NAME=arp-mitm DURATION=60' \
 		'                 Record a time-boxed manual scenario with captures and logs' \
 		'  make summarize  Summarize one run or the whole results/ directory' \
@@ -26,6 +27,10 @@ help:
 		'                 Record a manual ARP-focused scenario window' \
 		'  make danger-arp-dns DURATION=90' \
 		'                 Record a manual ARP + DNS scenario window' \
+		'  make danger-arp-mitm-auto DURATION=90' \
+		'                 Record an automated attacker-side ARP MITM scenario window' \
+		'  make danger-arp-dns-auto DURATION=90' \
+		'                 Record an automated attacker-side ARP + DNS scenario window' \
 		'  make danger-mitigation DURATION=90' \
 		'                 Record a manual mitigation scenario window' \
 		'  make danger-compare TARGET=results' \
@@ -35,34 +40,37 @@ help:
 		'  make rebuild    Destroy and recreate the full lab'
 
 prereqs:
-	./scripts/00-host-prereqs.sh
+	./shell/00-host-prereqs.sh
 
 networks:
-	./scripts/10-define-networks.sh
+	./shell/10-define-networks.sh
 
 storage:
-	./scripts/20-prepare-storage.sh
+	./shell/20-prepare-storage.sh
 
 render:
-	./scripts/30-build-cloud-init.sh
+	./shell/30-build-cloud-init.sh
 
 create-vms:
-	./scripts/40-create-vms.sh
+	./shell/40-create-vms.sh
 
 start:
-	./scripts/50-start-lab.sh
+	./shell/50-start-lab.sh
 
 status:
-	./scripts/60-status.sh
+	./shell/60-status.sh
 
 baseline:
-	./scripts/70-run-baseline.sh
+	./shell/70-run-baseline.sh
+
+smoke-test:
+	./shell/75-smoke-test.sh
 
 record-scenario:
-	./scripts/80-record-manual-scenario.sh "$(or $(NAME),manual-scenario)" "$(or $(DURATION),60)" "$(NOTE)"
+	./shell/80-record-manual-scenario.sh "$(or $(NAME),manual-scenario)" "$(or $(DURATION),60)" "$(NOTE)"
 
 summarize:
-	python3 ./scripts/85-summarize-results.py "$(or $(TARGET),results)"
+	python3 ./python/summarize_results.py "$(or $(TARGET),results)"
 
 danger-help:
 	$(MAKE) -C dangerous-scenarios help
@@ -76,6 +84,12 @@ danger-arp-mitm:
 danger-arp-dns:
 	$(MAKE) -C dangerous-scenarios record-arp-dns DURATION="$(or $(DURATION),90)"
 
+danger-arp-mitm-auto:
+	$(MAKE) -C dangerous-scenarios record-arp-mitm-auto DURATION="$(or $(DURATION),90)"
+
+danger-arp-dns-auto:
+	$(MAKE) -C dangerous-scenarios record-arp-dns-auto DURATION="$(or $(DURATION),90)"
+
 danger-mitigation:
 	$(MAKE) -C dangerous-scenarios record-mitigation DURATION="$(or $(DURATION),90)"
 
@@ -83,11 +97,11 @@ danger-compare:
 	$(MAKE) -C dangerous-scenarios compare TARGET="$(or $(TARGET),../results)"
 
 setup:
-	./scripts/setup-all.sh
+	./shell/setup-all.sh
 
 destroy:
-	./scripts/90-destroy-lab.sh
+	./shell/90-destroy-lab.sh
 
 rebuild:
-	./scripts/90-destroy-lab.sh
-	./scripts/setup-all.sh
+	./shell/90-destroy-lab.sh
+	./shell/setup-all.sh

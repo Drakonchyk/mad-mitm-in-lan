@@ -9,6 +9,7 @@ PING_RE = re.compile(r"=\s*([0-9.]+)/([0-9.]+)/([0-9.]+)/([0-9.]+)\s*ms")
 ALERT_EVENTS = {
     "gateway_mac_changed",
     "multiple_gateway_macs_seen",
+    "icmp_redirects_seen",
     "domain_resolution_changed",
 }
 
@@ -79,19 +80,43 @@ def count_nonempty_lines(path: Path) -> int:
     return sum(1 for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip())
 
 
+def count_suricata_alerts(path: Path) -> str:
+    if not path.exists():
+        return "n/a"
+    alerts = 0
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("event_type") == "alert":
+            alerts += 1
+    return str(alerts)
+
+
+def missing_metric_label(value: str, mode: str) -> str:
+    if value != "-":
+        return value
+    return "n/a" if mode == "manual-window" else value
+
+
 def summarize_run(run_dir: Path) -> dict[str, str]:
     meta = json.loads((run_dir / "run-meta.json").read_text(encoding="utf-8"))
     detector_total, detector_alerts = count_detector_events(run_dir / "victim" / "detector.delta.jsonl")
+    mode = meta.get("mode", "-")
     return {
         "run_id": meta.get("run_id", run_dir.name),
         "scenario": meta.get("scenario", "-"),
-        "mode": meta.get("mode", "-"),
-        "ping_gateway_avg_ms": parse_ping_avg(run_dir / "victim" / "ping-gateway.txt"),
-        "ping_attacker_avg_ms": parse_ping_avg(run_dir / "victim" / "ping-attacker.txt"),
-        "curl_total_s": parse_curl_total(run_dir / "victim" / "curl.txt"),
-        "iperf_mbps": parse_iperf_mbps(run_dir / "victim" / "iperf3.json"),
+        "mode": mode,
+        "ping_gateway_avg_ms": missing_metric_label(parse_ping_avg(run_dir / "victim" / "ping-gateway.txt"), mode),
+        "ping_attacker_avg_ms": missing_metric_label(parse_ping_avg(run_dir / "victim" / "ping-attacker.txt"), mode),
+        "curl_total_s": missing_metric_label(parse_curl_total(run_dir / "victim" / "curl.txt"), mode),
+        "iperf_mbps": missing_metric_label(parse_iperf_mbps(run_dir / "victim" / "iperf3.json"), mode),
         "detector_events": str(detector_total),
         "detector_alerts": str(detector_alerts),
+        "suricata_alerts": count_suricata_alerts(run_dir / "suricata" / "victim" / "eve.json"),
         "dns_log_lines": str(count_nonempty_lines(run_dir / "gateway" / "dnsmasq.delta.log")),
         "path": str(run_dir),
     }
@@ -106,6 +131,7 @@ def print_single(summary: dict[str, str]) -> None:
     print(f"Iperf throughput: {summary['iperf_mbps']} Mbps")
     print(f"Detector events: {summary['detector_events']}")
     print(f"Detector alerts: {summary['detector_alerts']}")
+    print(f"Suricata alerts: {summary['suricata_alerts']}")
     print(f"DNS log lines: {summary['dns_log_lines']}")
     print(f"Artifacts: {summary['path']}")
 
@@ -119,12 +145,13 @@ def print_table(summaries: list[dict[str, str]]) -> None:
         "curl_total_s",
         "iperf_mbps",
         "detector_alerts",
+        "suricata_alerts",
         "path",
     ]
     print("| " + " | ".join(headers) + " |")
     print("| " + " | ".join("---" for _ in headers) + " |")
     for summary in summaries:
-      print("| " + " | ".join(summary.get(header, "-") for header in headers) + " |")
+        print("| " + " | ".join(summary.get(header, "-") for header in headers) + " |")
 
 
 def main() -> int:

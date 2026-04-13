@@ -73,9 +73,14 @@ if [[ -n "${POOL_NAME}" ]] && run_hypervisor virsh -c "${LIBVIRT_URI}" pool-info
   if run_hypervisor virsh -c "${LIBVIRT_URI}" pool-info "${POOL_NAME}" | grep -q '^State:.*running'; then
     info "Destroying storage pool ${POOL_NAME}"
     run_hypervisor virsh -c "${LIBVIRT_URI}" pool-destroy "${POOL_NAME}" || true
+    sleep 1
   fi
-  info "Undefining storage pool ${POOL_NAME}"
-  run_hypervisor virsh -c "${LIBVIRT_URI}" pool-undefine "${POOL_NAME}" || true
+  if run_hypervisor virsh -c "${LIBVIRT_URI}" pool-info "${POOL_NAME}" | grep -q '^State:.*running'; then
+    warn "Storage pool ${POOL_NAME} is still active after destroy; skipping undefine for now"
+  else
+    info "Undefining storage pool ${POOL_NAME}"
+    run_hypervisor virsh -c "${LIBVIRT_URI}" pool-undefine "${POOL_NAME}" || true
+  fi
 fi
 
 if [[ -d "${STORAGE_ROOT}" ]]; then

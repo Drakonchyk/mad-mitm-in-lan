@@ -28,10 +28,9 @@ It also renders repeatable lab assets for:
 ## Project Layout
 
 - `lab.conf` - main lab configuration
+- `Makefile` - polished entry point for common lab tasks
 - `libvirt/*.xml` - network definitions
-- `scripts/setup-all.sh` - full setup flow
-- `scripts/60-status.sh` - current lab status
-- `scripts/90-destroy-lab.sh` - teardown
+- `scripts/` - numbered setup stages plus start, status, and teardown helpers
 
 ## Default Network Plan
 
@@ -79,21 +78,37 @@ Review the main settings if needed:
 nano lab.conf
 ```
 
+See the available commands:
+
+```bash
+make help
+```
+
 Provision the full lab:
 
 ```bash
-./scripts/setup-all.sh
+make setup
 ```
 
 Check status later with:
 
 ```bash
-./scripts/60-status.sh
+make status
 ```
 
 If direct libvirt access still fails from your current shell, log out and back in once, or use the `sg libvirt -c ...` examples below.
 
 The repo ignores `generated/` and `storage/` so local lab artifacts do not clutter version control.
+
+Useful day-to-day commands:
+
+```bash
+make prereqs
+make setup
+make start
+make status
+make destroy
+```
 
 ## What Gets Configured
 
@@ -141,7 +156,7 @@ Ctrl + ]
 ## Teardown
 
 ```bash
-./scripts/90-destroy-lab.sh
+make destroy
 ```
 
-That removes the VMs, networks, and overlay disks created by this project while leaving the downloaded base image in place.
+That removes the VMs, networks, libvirt storage pool, downloaded images, and the generated lab artifacts under `storage/` and `generated/`.

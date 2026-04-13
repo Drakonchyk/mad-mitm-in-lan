@@ -30,6 +30,7 @@ It also renders repeatable lab assets for:
 
 - `lab.conf` - main lab configuration
 - `Makefile` - polished entry point for common lab tasks
+- `dangerous-scenarios/` - clearly marked wrappers for recording manual high-risk lab scenarios
 - `libvirt/*.xml` - network definitions
 - `scripts/` - numbered setup stages plus experiment, status, and teardown helpers
 
@@ -132,6 +133,12 @@ make summarize
 ```
 
 The attack and mitigation actions themselves are intentionally left manual inside the isolated lab, but the setup, traffic generation, capture collection, and result summaries are scripted so the runs stay reproducible.
+
+```bash
+./dangerous-scenarios/record-arp-mitm.sh
+./dangerous-scenarios/record-arp-dns.sh
+./dangerous-scenarios/record-mitigation.sh
+```
 
 ## What Gets Configured
 

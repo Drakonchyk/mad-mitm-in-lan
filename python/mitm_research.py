@@ -102,13 +102,20 @@ class ArpPoisoner:
         sendp(victim_packet, iface=self.interface, verbose=False)
         sendp(gateway_packet, iface=self.interface, verbose=False)
 
-    def run(self, cycles: int | None = None, stop_requested: Callable[[], bool] | None = None) -> None:
+    def run(
+        self,
+        cycles: int | None = None,
+        stop_requested: Callable[[], bool] | None = None,
+        on_cycle: Callable[[int, ArpEndpoints], None] | None = None,
+    ) -> None:
         sent = 0
         while cycles is None or sent < cycles:
             if stop_requested and stop_requested():
                 break
             self.poison_once()
             sent += 1
+            if on_cycle:
+                on_cycle(sent, self.resolve_endpoints())
             time.sleep(self.interval)
 
     def restore(self, count: int = 5) -> None:

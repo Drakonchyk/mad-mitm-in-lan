@@ -610,6 +610,12 @@ explain_saved_run() {
   python3 "${LAB_DIR}/python/explain_run.py" "${RUN_DIR}" > "${RUN_DIR}/victim/detector-explained.txt" 2>&1 || true
 }
 
+evaluate_saved_run() {
+  python3 "${LAB_DIR}/python/evaluate_run.py" "${RUN_DIR}" \
+    --json-out "${RUN_DIR}/evaluation.json" \
+    --text-out "${RUN_DIR}/evaluation-summary.txt" >/dev/null 2>&1 || true
+}
+
 write_summary() {
   local target="${1:-${RUN_DIR}}"
   python3 "${LAB_DIR}/python/summarize_results.py" "${target}" | tee "${target}/summary.txt"

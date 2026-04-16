@@ -123,6 +123,7 @@ make start
 make status
 make baseline
 make smoke-test
+make evaluate
 make destroy
 ```
 
@@ -138,11 +139,14 @@ The repo now automates the safe and repeatable parts of the methodology:
 - `make smoke-test` runs a short baseline plus short automated ARP and ARP+DNS checks to validate the end-to-end research pipeline
 - `make record-scenario NAME=arp-mitm DURATION=60` opens a capture window for a manual scenario while the victim generates background traffic
 - `make summarize` prints a compact summary for everything under `results/`
+- `make evaluate` compares ground truth, detector alerts, and Suricata alerts for one run or a whole results tree
 
 Key run artifacts to read first:
 
 - `summary.txt` for top-level metrics
 - `victim/detector-explained.txt` for a concise attack timeline from the detector and victim probes
+- `evaluation-summary.txt` for ground-truth attack events versus detector and Suricata alert counts plus time to detection
+- `evaluation.json` for machine-readable evaluation inputs
 - `pcap/*.tshark-summary.txt` for quick packet-level comparisons
 - `suricata/` when host-side Suricata is available
 

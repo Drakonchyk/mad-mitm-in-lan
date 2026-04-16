@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help prereqs networks storage render create-vms start status baseline smoke-test record-scenario summarize danger-help danger-verify danger-arp-mitm danger-arp-dns danger-arp-mitm-auto danger-arp-dns-auto danger-mitigation danger-compare setup destroy rebuild
+.PHONY: help prereqs networks storage render create-vms start status baseline smoke-test record-scenario summarize evaluate danger-help danger-verify danger-arp-mitm danger-arp-dns danger-arp-mitm-auto danger-arp-dns-auto danger-mitigation danger-compare setup destroy rebuild
 
 help:
 	@printf '%s\n' \
@@ -19,6 +19,7 @@ help:
 		'  make record-scenario NAME=arp-mitm DURATION=60' \
 		'                 Record a time-boxed manual scenario with captures and logs' \
 		'  make summarize  Summarize one run or the whole results/ directory' \
+		'  make evaluate   Compare ground truth, detector alerts, and Suricata alerts' \
 		'  make danger-help' \
 		'                 Show wrappers for manually executed high-risk lab scenarios' \
 		'  make danger-verify' \
@@ -71,6 +72,9 @@ record-scenario:
 
 summarize:
 	python3 ./python/summarize_results.py "$(or $(TARGET),results)"
+
+evaluate:
+	python3 ./python/evaluate_run.py "$(or $(TARGET),results)"
 
 danger-help:
 	$(MAKE) -C dangerous-scenarios help

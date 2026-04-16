@@ -55,6 +55,7 @@ ENDED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 write_run_meta "automated-baseline" "${STARTED_AT}" "${ENDED_AT}" "Clean traffic run generated entirely by the host automation"
 analyze_saved_pcaps_with_suricata
 explain_saved_run
+evaluate_saved_run
 
 info "Baseline artifacts saved under ${RUN_DIR}"
 write_summary "${RUN_DIR}"

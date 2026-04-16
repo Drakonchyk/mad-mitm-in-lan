@@ -7,10 +7,9 @@ from pathlib import Path
 
 PING_RE = re.compile(r"=\s*([0-9.]+)/([0-9.]+)/([0-9.]+)/([0-9.]+)\s*ms")
 ALERT_EVENTS = {
-    "gateway_mac_changed",
-    "multiple_gateway_macs_seen",
-    "icmp_redirects_seen",
-    "domain_resolution_changed",
+    "arp_spoof_packet_seen",
+    "icmp_redirect_packet_seen",
+    "dns_spoof_packet_seen",
 }
 
 
@@ -80,6 +79,22 @@ def count_nonempty_lines(path: Path) -> int:
     return sum(1 for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip())
 
 
+def count_zeek_notices(path: Path) -> str:
+    if not path.exists():
+        return "n/a"
+    alerts = 0
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("note"):
+            alerts += 1
+    return str(alerts)
+
+
 def count_suricata_alerts(path: Path) -> str:
     if not path.exists():
         return "n/a"
@@ -116,6 +131,7 @@ def summarize_run(run_dir: Path) -> dict[str, str]:
         "iperf_mbps": missing_metric_label(parse_iperf_mbps(run_dir / "victim" / "iperf3.json"), mode),
         "detector_events": str(detector_total),
         "detector_alerts": str(detector_alerts),
+        "zeek_alerts": count_zeek_notices(run_dir / "zeek" / "victim" / "notice.log"),
         "suricata_alerts": count_suricata_alerts(run_dir / "suricata" / "victim" / "eve.json"),
         "dns_log_lines": str(count_nonempty_lines(run_dir / "gateway" / "dnsmasq.delta.log")),
         "path": str(run_dir),
@@ -131,6 +147,7 @@ def print_single(summary: dict[str, str]) -> None:
     print(f"Iperf throughput: {summary['iperf_mbps']} Mbps")
     print(f"Detector events: {summary['detector_events']}")
     print(f"Detector alerts: {summary['detector_alerts']}")
+    print(f"Zeek alerts: {summary['zeek_alerts']}")
     print(f"Suricata alerts: {summary['suricata_alerts']}")
     print(f"DNS log lines: {summary['dns_log_lines']}")
     print(f"Artifacts: {summary['path']}")
@@ -145,6 +162,7 @@ def print_table(summaries: list[dict[str, str]]) -> None:
         "curl_total_s",
         "iperf_mbps",
         "detector_alerts",
+        "zeek_alerts",
         "suricata_alerts",
         "path",
     ]

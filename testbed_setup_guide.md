@@ -120,8 +120,8 @@ Victim and attacker should each have **only** one NIC on `mitm-lab`.
 ### Strongly recommended
 
 - bettercap on attacker VM for quick ARP and DNS spoofing tests
-- Suricata on monitor/gateway side for packet-rule comparison
-- Zeek if you want richer network logs
+- Zeek for richer network logs
+- Suricata for signature-style live comparison
 
 ## 6. Detector plan
 
@@ -156,7 +156,7 @@ For each run, save:
 5. Test ARP poisoning with forwarding.
 6. Add selected DNS spoofing for one or two test domains.
 7. Turn your detector on and repeat each scenario multiple times.
-8. Add optional Suricata or Zeek only after the custom detector works.
+8. Add optional Zeek and Suricata only after the custom detector works.
 
 ## 9. What to put in the thesis appendix
 
@@ -177,7 +177,7 @@ For your diploma, the cleanest path is:
 
 - **core implementation:** Ubuntu host + 3 Ubuntu VMs + Python/Scapy detector + tcpdump/Wireshark
 - **convenience tooling:** bettercap for fast attack execution
-- **optional comparison:** Suricata or Zeek
+- **optional comparison:** Zeek and Suricata
 - **optional extension:** Mininet later, only if you want a scaling/simulation section
 
 This gives you a realistic, reproducible, and laptop-friendly setup without making the project too wide.

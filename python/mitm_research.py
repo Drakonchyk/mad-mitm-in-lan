@@ -112,10 +112,11 @@ class ArpPoisoner:
         while cycles is None or sent < cycles:
             if stop_requested and stop_requested():
                 break
-            self.poison_once()
-            sent += 1
+            cycle_number = sent + 1
             if on_cycle:
-                on_cycle(sent, self.resolve_endpoints())
+                on_cycle(cycle_number, self.resolve_endpoints())
+            self.poison_once()
+            sent = cycle_number
             time.sleep(self.interval)
 
     def restore(self, count: int = 5) -> None:

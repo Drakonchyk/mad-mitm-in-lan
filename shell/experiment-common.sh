@@ -5,7 +5,11 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 CAPTURE_PACKET_COUNT="${CAPTURE_PACKET_COUNT:-20000}"
+ZEEK_ENABLE="${ZEEK_ENABLE:-auto}"
 SURICATA_ENABLE="${SURICATA_ENABLE:-auto}"
+KEEP_DEBUG_ARTIFACTS="${KEEP_DEBUG_ARTIFACTS:-0}"
+ZEEK_ACTIVE=0
+SURICATA_ACTIVE=0
 
 require_experiment_tools() {
   require_cmd ssh
@@ -25,18 +29,66 @@ repo_root = Path(sys.argv[1])
 output_path = Path(sys.argv[2])
 sys.path.insert(0, str(repo_root / "python"))
 
-from lab_config import load_lab_config  # noqa: E402
+from lab_config import load_lab_config, load_lab_settings  # noqa: E402
 
 config = load_lab_config(repo_root / "lab.conf")
+settings = load_lab_settings(repo_root / "lab.conf")
 domain_list = ", ".join(repr(domain) for domain in config["DETECTOR_DOMAINS"].split() if domain)
 source = (repo_root / "python" / "mitm_lab_detector.py").read_text(encoding="utf-8")
 rendered = (
     source.replace("__GATEWAY_IP__", config["GATEWAY_IP"])
     .replace("__DNS_SERVER__", config["DNS_SERVER"])
+    .replace("__ATTACKER_IP__", str(settings.attacker_ip))
+    .replace("__VICTIM_IP__", str(settings.victim_ip))
     .replace("__PYTHON_DOMAIN_LIST__", domain_list)
 )
 output_path.write_text(rendered, encoding="utf-8")
 PY
+}
+
+render_victim_zeek_policy() {
+  local outfile="$1"
+
+  python3 - "$LAB_DIR" "$outfile" <<'PY'
+from pathlib import Path
+import sys
+
+repo_root = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+sys.path.insert(0, str(repo_root / "python"))
+
+from lab_config import load_lab_config  # noqa: E402
+
+config = load_lab_config(repo_root / "lab.conf")
+domains = ", ".join(f'"{domain.lower()}"' for domain in config["DETECTOR_DOMAINS"].split() if domain)
+source = (repo_root / "config" / "mitm-lab-live.zeek").read_text(encoding="utf-8")
+rendered = (
+    source.replace("__GATEWAY_IP__", config["GATEWAY_IP"])
+    .replace("__DNS_SERVER__", config["DNS_SERVER"])
+    .replace("__ATTACKER_IP__", config["ATTACKER_CIDR"].split("/", 1)[0])
+    .replace("__VICTIM_IP__", config["VICTIM_CIDR"].split("/", 1)[0])
+    .replace("__ATTACKER_MAC__", config["ATTACKER_MAC"].lower())
+    .replace("__GATEWAY_MAC__", config["GATEWAY_LAB_MAC"].lower())
+    .replace("__ZEEK_DOMAIN_SET__", domains)
+)
+output_path.write_text(rendered, encoding="utf-8")
+PY
+}
+
+render_victim_suricata_rules() {
+  local outfile="$1"
+  local attacker_ip victim_ip gateway_ip a b c d attacker_ip_hex
+
+  attacker_ip="$(cidr_addr "${ATTACKER_CIDR}")"
+  victim_ip="$(cidr_addr "${VICTIM_CIDR}")"
+  gateway_ip="${GATEWAY_IP}"
+  IFS=. read -r a b c d <<< "${attacker_ip}"
+  printf -v attacker_ip_hex '|%02X %02X %02X %02X|' "${a}" "${b}" "${c}" "${d}"
+
+  cat > "${outfile}" <<EOF
+alert icmp ${attacker_ip} any -> ${victim_ip} any (msg:"MITM-LAB live ICMP redirect from attacker to victim"; itype:5; classtype:attempted-admin; sid:9901001; rev:1;)
+alert udp ${gateway_ip} 53 -> ${victim_ip} any (msg:"MITM-LAB live DNS answer contains attacker IP"; content:"${attacker_ip_hex}"; classtype:bad-unknown; sid:9901002; rev:1;)
+EOF
 }
 
 prepare_victim_detector() {
@@ -53,10 +105,143 @@ prepare_victim_detector() {
   info "Deploying current detector source to victim"
   lab_scp_to victim "${rendered_detector}" "/tmp/mitm_lab_detector.py"
   remote_sudo_bash_lc victim \
-    "install -m 0755 '/tmp/mitm_lab_detector.py' '/usr/local/bin/mitm_lab_detector.py' && rm -f '/tmp/mitm_lab_detector.py' && rm -f '/var/lib/mitm-lab-detector/state.json' && systemctl restart mitm-lab-detector.service && systemctl is-active --quiet mitm-lab-detector.service"
+    "if ! python3 -c 'import scapy.all' >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3-scapy; fi
+     install -m 0755 '/tmp/mitm_lab_detector.py' '/usr/local/bin/mitm_lab_detector.py'
+     rm -f '/tmp/mitm_lab_detector.py'
+     rm -f '/var/lib/mitm-lab-detector/state.json'
+     systemctl restart mitm-lab-detector.service
+     systemctl is-active --quiet mitm-lab-detector.service"
 
   rm -f "${rendered_detector}"
+  prime_victim_detector_domains
   wait_for_victim_detector_baseline
+}
+
+zeek_requested() {
+  case "${ZEEK_ENABLE}" in
+    1|true|yes|on|auto)
+      return 0
+      ;;
+    0|false|no|off)
+      return 1
+      ;;
+    *)
+      warn "Unknown ZEEK_ENABLE value: ${ZEEK_ENABLE}; skipping Zeek"
+      return 1
+      ;;
+  esac
+}
+
+suricata_requested() {
+  case "${SURICATA_ENABLE}" in
+    1|true|yes|on|auto)
+      return 0
+      ;;
+    0|false|no|off)
+      return 1
+      ;;
+    *)
+      warn "Unknown SURICATA_ENABLE value: ${SURICATA_ENABLE}; skipping Suricata"
+      return 1
+      ;;
+  esac
+}
+
+prepare_victim_zeek() {
+  local rendered_policy
+
+  ZEEK_ACTIVE=0
+  if ! zeek_requested; then
+    return 0
+  fi
+
+  rendered_policy="$(mktemp)"
+  render_victim_zeek_policy "${rendered_policy}"
+
+  info "Deploying live Zeek comparison sensor to victim"
+  lab_scp_to victim "${rendered_policy}" "/tmp/mitm-lab-live.zeek"
+  lab_scp_to victim "${LAB_DIR}/shell/mitm-lab-zeek-live.sh" "/tmp/mitm-lab-zeek-live.sh"
+  lab_scp_to victim "${LAB_DIR}/services/mitm-lab-zeek.service" "/tmp/mitm-lab-zeek.service"
+
+  if remote_sudo_bash_lc victim \
+    "if ! command -v zeek >/dev/null 2>&1 && [[ ! -x /opt/zeek/bin/zeek ]]; then
+       if ! command -v gpg >/dev/null 2>&1; then
+         apt-get update
+         DEBIAN_FRONTEND=noninteractive apt-get install -y gnupg ca-certificates
+       fi
+       . /etc/os-release
+       repo_base=\"https://download.opensuse.org/repositories/security:/zeek/xUbuntu_\${VERSION_ID}\"
+       curl -fsSL \"\${repo_base}/Release.key\" | gpg --dearmor > /tmp/security_zeek.gpg
+       install -m 0644 /tmp/security_zeek.gpg /etc/apt/trusted.gpg.d/security_zeek.gpg
+       echo \"deb \${repo_base}/ /\" > /etc/apt/sources.list.d/security:zeek.list
+       apt-get update
+       DEBIAN_FRONTEND=noninteractive apt-get install -y zeek
+     fi
+     if ! command -v zeek >/dev/null 2>&1 && [[ -x /opt/zeek/bin/zeek ]]; then
+       ln -sf /opt/zeek/bin/zeek /usr/local/bin/zeek
+     fi
+     install -d -m 0755 '/etc/mitm-lab' '/var/log/mitm-lab-zeek/current'
+     install -m 0644 '/tmp/mitm-lab-live.zeek' '/etc/mitm-lab/mitm-lab-live.zeek'
+     install -m 0755 '/tmp/mitm-lab-zeek-live.sh' '/usr/local/bin/mitm-lab-zeek-live.sh'
+     install -m 0644 '/tmp/mitm-lab-zeek.service' '/etc/systemd/system/mitm-lab-zeek.service'
+     rm -f '/tmp/mitm-lab-live.zeek' '/tmp/mitm-lab-zeek-live.sh' '/tmp/mitm-lab-zeek.service'
+     rm -f /var/log/mitm-lab-zeek/current/*.log
+     systemctl daemon-reload
+     systemctl enable --now mitm-lab-zeek.service
+     systemctl restart mitm-lab-zeek.service
+     systemctl is-active --quiet mitm-lab-zeek.service"; then
+    ZEEK_ACTIVE=1
+  else
+    warn "Victim Zeek service could not be prepared; continuing without Zeek comparison for this run"
+  fi
+
+  rm -f "${rendered_policy}"
+}
+
+prepare_victim_suricata() {
+  local rendered_rules
+
+  SURICATA_ACTIVE=0
+  if ! suricata_requested; then
+    return 0
+  fi
+
+  rendered_rules="$(mktemp)"
+  render_victim_suricata_rules "${rendered_rules}"
+
+  info "Deploying live Suricata comparison sensor to victim"
+  lab_scp_to victim "${rendered_rules}" "/tmp/mitm-lab-suricata.rules"
+  lab_scp_to victim "${LAB_DIR}/shell/mitm-lab-suricata-live.sh" "/tmp/mitm-lab-suricata-live.sh"
+  lab_scp_to victim "${LAB_DIR}/services/mitm-lab-suricata.service" "/tmp/mitm-lab-suricata.service"
+
+  if remote_sudo_bash_lc victim \
+    "if ! command -v suricata >/dev/null 2>&1; then
+       apt-get update
+       DEBIAN_FRONTEND=noninteractive apt-get install -y suricata
+     fi
+     install -d -m 0755 '/etc/mitm-lab' '/var/log/mitm-lab-suricata/current'
+     install -m 0644 '/tmp/mitm-lab-suricata.rules' '/etc/mitm-lab/mitm-lab-suricata.rules'
+     install -m 0755 '/tmp/mitm-lab-suricata-live.sh' '/usr/local/bin/mitm-lab-suricata-live.sh'
+     install -m 0644 '/tmp/mitm-lab-suricata.service' '/etc/systemd/system/mitm-lab-suricata.service'
+     rm -f '/tmp/mitm-lab-suricata.rules' '/tmp/mitm-lab-suricata-live.sh' '/tmp/mitm-lab-suricata.service'
+     rm -f /var/log/mitm-lab-suricata/current/*.json /var/log/mitm-lab-suricata/current/*.log
+     systemctl daemon-reload
+     systemctl enable --now mitm-lab-suricata.service
+     systemctl restart mitm-lab-suricata.service
+     systemctl is-active --quiet mitm-lab-suricata.service"; then
+    SURICATA_ACTIVE=1
+  else
+    warn "Victim Suricata service could not be prepared; continuing without Suricata comparison for this run"
+  fi
+
+  rm -f "${rendered_rules}"
+}
+
+prime_victim_detector_domains() {
+  info "Priming victim detector with clean DNS answers for monitored domains"
+  remote_bash_lc victim \
+    "for domain in ${DETECTOR_DOMAINS}; do dig +time=1 +tries=1 +short A \"\$domain\" @'${DNS_SERVER}' >/dev/null 2>&1 || true; done"
+  sleep 2
 }
 
 wait_for_victim_detector_baseline() {
@@ -148,6 +333,56 @@ json_escape() {
   printf '%s' "$text"
 }
 
+json_bool() {
+  case "${1:-}" in
+    1|true|yes|on)
+      printf 'true\n'
+      ;;
+    *)
+      printf 'false\n'
+      ;;
+  esac
+}
+
+json_number_or_null() {
+  if [[ -n "${1:-}" ]]; then
+    printf '%s\n' "$1"
+  else
+    printf 'null\n'
+  fi
+}
+
+json_string_array_from_words() {
+  python3 - "$1" <<'PY'
+import json
+import sys
+
+text = sys.argv[1].strip()
+items = [item for item in text.split() if item]
+print(json.dumps(items))
+PY
+}
+
+timestamp_at_offset_or_null() {
+  local base_ts="$1"
+  local offset="$2"
+
+  if [[ -z "${offset}" ]]; then
+    printf 'null\n'
+    return 0
+  fi
+
+  python3 - "$base_ts" "$offset" <<'PY'
+from datetime import datetime, timedelta, timezone
+import sys
+
+base = datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
+offset = float(sys.argv[2])
+ts = (base + timedelta(seconds=offset)).astimezone(timezone.utc).isoformat()
+print(json.dumps(ts))
+PY
+}
+
 scenario_slug() {
   local raw="$1"
   raw="${raw,,}"
@@ -217,6 +452,17 @@ write_run_meta() {
   local started_at="$2"
   local ended_at="$3"
   local notes="${4:-}"
+  local run_index_json warmup_json duration_json attack_start_json attack_stop_json mitigation_start_json forwarding_json dns_spoof_json spoofed_domains_json
+
+  run_index_json="$(json_number_or_null "${PLAN_RUN_INDEX:-}")"
+  warmup_json="$(json_bool "${PLAN_WARMUP:-0}")"
+  duration_json="$(json_number_or_null "${PLAN_DURATION_SECONDS:-}")"
+  attack_start_json="$(timestamp_at_offset_or_null "${started_at}" "${PLAN_ATTACK_START_OFFSET_SECONDS:-}")"
+  attack_stop_json="$(timestamp_at_offset_or_null "${started_at}" "${PLAN_ATTACK_STOP_OFFSET_SECONDS:-}")"
+  mitigation_start_json="$(timestamp_at_offset_or_null "${started_at}" "${PLAN_MITIGATION_START_OFFSET_SECONDS:-}")"
+  forwarding_json="$(json_bool "${PLAN_FORWARDING_ENABLED:-0}")"
+  dns_spoof_json="$(json_bool "${PLAN_DNS_SPOOF_ENABLED:-0}")"
+  spoofed_domains_json="$(json_string_array_from_words "${PLAN_SPOOFED_DOMAINS:-}")"
 
   cat > "${RUN_DIR}/run-meta.json" <<EOF
 {
@@ -230,6 +476,17 @@ write_run_meta() {
   "gateway_lab_ip": "${GATEWAY_IP}",
   "victim_ip": "$(cidr_addr "${VICTIM_CIDR}")",
   "attacker_ip": "$(cidr_addr "${ATTACKER_CIDR}")",
+  "run_index": ${run_index_json},
+  "warmup": ${warmup_json},
+  "duration_seconds": ${duration_json},
+  "attack_started_at": ${attack_start_json},
+  "attack_stopped_at": ${attack_stop_json},
+  "mitigation_started_at": ${mitigation_start_json},
+  "forwarding_enabled": ${forwarding_json},
+  "dns_spoof_enabled": ${dns_spoof_json},
+  "spoofed_domains": ${spoofed_domains_json},
+  "zeek_enabled": $(json_bool "${ZEEK_ACTIVE:-0}"),
+  "suricata_enabled": $(json_bool "${SURICATA_ACTIVE:-0}"),
   "notes": "$(json_escape "${notes}")",
   "domains": "$(json_escape "${DETECTOR_DOMAINS}")"
 }
@@ -324,6 +581,25 @@ remote_file_exists() {
   remote_bash_lc "$host" "test -f '$remote_path'" >/dev/null 2>&1
 }
 
+wait_for_remote_file() {
+  local host="$1"
+  local remote_path="$2"
+  local attempts="${3:-5}"
+  local delay="${4:-1}"
+  local try
+
+  for ((try = 1; try <= attempts; try++)); do
+    if remote_file_exists "$host" "$remote_path"; then
+      return 0
+    fi
+    if (( try < attempts )); then
+      sleep "$delay"
+    fi
+  done
+
+  return 1
+}
+
 start_remote_background_job() {
   local host="$1"
   local label="$2"
@@ -364,6 +640,8 @@ save_common_state() {
   capture_remote_command victim "${RUN_DIR}/victim/ip-route.txt" "ip route show"
   capture_remote_command victim "${RUN_DIR}/victim/ip-neigh.txt" "ip neigh show"
   capture_remote_command victim "${RUN_DIR}/victim/detector-service.txt" "systemctl status mitm-lab-detector.service --no-pager || true"
+  capture_remote_command victim "${RUN_DIR}/victim/zeek-service.txt" "systemctl status mitm-lab-zeek.service --no-pager || true"
+  capture_remote_command victim "${RUN_DIR}/victim/suricata-service.txt" "systemctl status mitm-lab-suricata.service --no-pager || true"
   capture_remote_command attacker "${RUN_DIR}/attacker/ip-route.txt" "ip route show"
   capture_remote_command attacker "${RUN_DIR}/attacker/ip-neigh.txt" "ip neigh show"
 }
@@ -383,7 +661,6 @@ save_tool_versions() {
     python3 --version || true
     virsh --version || true
     qemu-system-x86_64 --version 2>/dev/null | sed -n '1p' || true
-    suricata --build-info 2>/dev/null | sed -n '1,4p' || true
     tshark --version 2>/dev/null | sed -n '1,2p' || true
     tcpdump --version 2>/dev/null | sed -n '1p' || true
     curl --version 2>/dev/null | sed -n '1p' || true
@@ -392,7 +669,7 @@ save_tool_versions() {
     echo '== package versions =='
     dpkg-query -W -f='\${Package}=\${Version}\n' \
       qemu-system-x86 libvirt-daemon-system libvirt-clients virtinst \
-      suricata tshark tcpdump python3 curl jq dnsutils 2>/dev/null || true
+      tshark tcpdump python3 curl jq dnsutils 2>/dev/null || true
   "
 
   capture_remote_command gateway "${RUN_DIR}/gateway/versions.txt" "
@@ -430,6 +707,9 @@ save_tool_versions() {
     echo
     echo '== command versions =='
     python3 --version 2>/dev/null || true
+    python3 -c 'import scapy; print(\"scapy=\" + scapy.__version__)' 2>/dev/null || true
+    zeek --version 2>/dev/null | sed -n '1p' || true
+    suricata --build-info 2>/dev/null | sed -n '1,4p' || true
     tshark --version 2>/dev/null | sed -n '1,2p' || true
     tcpdump --version 2>/dev/null | sed -n '1p' || true
     dig -v 2>/dev/null | sed -n '1p' || true
@@ -439,7 +719,7 @@ save_tool_versions() {
     echo
     echo '== package versions =='
     dpkg-query -W -f='\${Package}=\${Version}\n' \
-      python3 python3-pip tcpdump tshark dnsutils curl iperf3 jq 2>/dev/null || true
+      python3 python3-pip python3-scapy tcpdump tshark dnsutils curl iperf3 jq zeek suricata 2>/dev/null || true
   "
 
   capture_remote_command attacker "${RUN_DIR}/attacker/versions.txt" "
@@ -517,6 +797,18 @@ write_tshark_summary() {
       -e dns.qry.name \
       -e dns.a \
       -E header=y -E separator=, | sed -n '1,80p'
+    echo
+    echo "== icmp redirect sample =="
+    tshark -r "${pcap_path}" -Y "icmp.type == 5" \
+      -T fields \
+      -e frame.number \
+      -e frame.time_relative \
+      -e ip.src \
+      -e ip.dst \
+      -e icmp.type \
+      -e icmp.code \
+      -e icmp.redir_gw \
+      -E header=y -E separator=, | sed -n '1,80p'
   } > "${outfile}" 2>&1 || {
     warn "tshark summary failed for ${pcap_path}"
     return 0
@@ -529,23 +821,10 @@ summarize_saved_pcaps() {
   done < <(find "${RUN_DIR}/pcap" -maxdepth 1 -type f -name '*.pcap' -print0 | sort -z)
 }
 
-suricata_should_run() {
-  case "${SURICATA_ENABLE}" in
-    1|true|yes|on)
-      return 0
-      ;;
-    0|false|no|off)
-      return 1
-      ;;
-    auto)
-      command -v suricata >/dev/null 2>&1 && [[ -f /etc/suricata/suricata.yaml ]]
-      return
-      ;;
-    *)
-      warn "Unknown SURICATA_ENABLE value: ${SURICATA_ENABLE}; skipping Suricata"
-      return 1
-      ;;
-  esac
+write_zeek_status() {
+  local message="$1"
+  mkdir -p "${RUN_DIR}/zeek"
+  printf '%s\n' "${message}" > "${RUN_DIR}/zeek/status.txt"
 }
 
 write_suricata_status() {
@@ -554,56 +833,108 @@ write_suricata_status() {
   printf '%s\n' "${message}" > "${RUN_DIR}/suricata/status.txt"
 }
 
-analyze_saved_pcaps_with_suricata() {
-  local pcap_path outdir eve_path summary_path rules_path
+capture_victim_zeek_artifacts() {
+  local outdir notice_path summary_path
 
-  if ! suricata_should_run; then
+  if ! zeek_requested; then
+    write_zeek_status "zeek_status=skipped"
+    return 0
+  fi
+
+  if [[ "${ZEEK_ACTIVE:-0}" != "1" ]]; then
+    write_zeek_status "zeek_status=prepare_failed"
+    return 0
+  fi
+
+  outdir="${RUN_DIR}/zeek/victim"
+  notice_path="${outdir}/notice.log"
+  summary_path="${outdir}/summary.txt"
+  mkdir -p "${outdir}"
+
+  if remote_file_exists victim "/var/log/mitm-lab-zeek/current/notice.log"; then
+    fetch_remote_file victim "/var/log/mitm-lab-zeek/current/notice.log" "${notice_path}" || true
+  fi
+
+  if [[ "${KEEP_DEBUG_ARTIFACTS}" == "1" ]]; then
+    if remote_file_exists victim "/var/log/mitm-lab-zeek/current/reporter.log"; then
+      fetch_remote_file victim "/var/log/mitm-lab-zeek/current/reporter.log" "${outdir}/reporter.log" || true
+    fi
+    if remote_file_exists victim "/var/log/mitm-lab-zeek/current/loaded_scripts.log"; then
+      fetch_remote_file victim "/var/log/mitm-lab-zeek/current/loaded_scripts.log" "${outdir}/loaded_scripts.log" || true
+    fi
+  fi
+
+  if [[ -f "${notice_path}" ]]; then
+    python3 "${LAB_DIR}/python/summarize_zeek_notice.py" "${notice_path}" > "${summary_path}" 2>&1 || true
+    write_zeek_status "zeek_status=ok"
+  else
+    write_zeek_status "zeek_status=ok_no_notice"
+  fi
+}
+
+capture_victim_suricata_artifacts() {
+  local outdir eve_path summary_path
+
+  if ! suricata_requested; then
     write_suricata_status "suricata_status=skipped"
     return 0
   fi
 
-  pcap_path="${RUN_DIR}/pcap/victim.pcap"
-  if [[ ! -s "${pcap_path}" ]]; then
-    write_suricata_status "suricata_status=skipped_no_victim_pcap"
+  if [[ "${SURICATA_ACTIVE:-0}" != "1" ]]; then
+    write_suricata_status "suricata_status=prepare_failed"
     return 0
   fi
 
   outdir="${RUN_DIR}/suricata/victim"
   eve_path="${outdir}/eve.json"
   summary_path="${outdir}/summary.txt"
-  rules_path="${RUN_DIR}/suricata/mitm-lab.rules"
   mkdir -p "${outdir}"
-  write_suricata_status "suricata_status=running"
-  render_suricata_lab_rules "${rules_path}"
 
-  if ! suricata -r "${pcap_path}" -l "${outdir}" -c /etc/suricata/suricata.yaml -S "${rules_path}" >/dev/null 2>&1; then
-    write_suricata_status "suricata_status=failed"
-    warn "Suricata analysis failed for ${pcap_path}"
-    return 0
+  if remote_file_exists victim "/var/log/mitm-lab-suricata/current/eve.json"; then
+    fetch_remote_file victim "/var/log/mitm-lab-suricata/current/eve.json" "${eve_path}" || true
+  fi
+
+  if [[ "${KEEP_DEBUG_ARTIFACTS}" == "1" ]]; then
+    if remote_file_exists victim "/var/log/mitm-lab-suricata/current/fast.log"; then
+      fetch_remote_file victim "/var/log/mitm-lab-suricata/current/fast.log" "${outdir}/fast.log" || true
+    fi
+    if remote_file_exists victim "/var/log/mitm-lab-suricata/current/suricata.log"; then
+      fetch_remote_file victim "/var/log/mitm-lab-suricata/current/suricata.log" "${outdir}/suricata.log" || true
+    fi
+    if remote_file_exists victim "/var/log/mitm-lab-suricata/current/stats.log"; then
+      fetch_remote_file victim "/var/log/mitm-lab-suricata/current/stats.log" "${outdir}/stats.log" || true
+    fi
   fi
 
   if [[ -f "${eve_path}" ]]; then
-    python3 "${LAB_DIR}/python/summarize_suricata_eve.py" "${eve_path}" "${RUN_DIR}" > "${summary_path}" 2>&1 || true
+    python3 "${LAB_DIR}/python/summarize_suricata_eve.py" "${eve_path}" > "${summary_path}" 2>&1 || true
     write_suricata_status "suricata_status=ok"
   else
     write_suricata_status "suricata_status=ok_no_eve"
   fi
 }
 
-render_suricata_lab_rules() {
-  local outfile="$1"
-  local victim_ip attacker_ip gateway_ip attacker_ip_hex
+prune_run_artifacts() {
+  if [[ "${KEEP_DEBUG_ARTIFACTS}" == "1" ]]; then
+    return 0
+  fi
 
-  victim_ip="$(cidr_addr "${VICTIM_CIDR}")"
-  attacker_ip="$(cidr_addr "${ATTACKER_CIDR}")"
-  gateway_ip="${GATEWAY_IP}"
-  IFS=. read -r a b c d <<< "${attacker_ip}"
-  printf -v attacker_ip_hex '|%02X %02X %02X %02X|' "${a}" "${b}" "${c}" "${d}"
-
-  cat > "${outfile}" <<EOF
-alert icmp ${attacker_ip} any -> ${victim_ip} any (msg:"MITM-LAB ICMP redirect from attacker to victim"; itype:5; classtype:attempted-admin; sid:9900001; rev:1;)
-alert udp ${gateway_ip} 53 -> ${victim_ip} any (msg:"MITM-LAB DNS answer contains attacker IP"; content:"${attacker_ip_hex}"; classtype:bad-unknown; sid:9900002; rev:1;)
-EOF
+  rm -f \
+    "${RUN_DIR}/gateway/ip-route.txt" \
+    "${RUN_DIR}/gateway/ip-neigh.txt" \
+    "${RUN_DIR}/gateway/ip-neigh-after.txt" \
+    "${RUN_DIR}/gateway/dnsmasq-service.txt" \
+    "${RUN_DIR}/victim/ip-route.txt" \
+    "${RUN_DIR}/victim/ip-neigh.txt" \
+    "${RUN_DIR}/victim/ip-neigh-after.txt" \
+    "${RUN_DIR}/victim/detector-service.txt" \
+    "${RUN_DIR}/victim/zeek-service.txt" \
+    "${RUN_DIR}/victim/suricata-service.txt" \
+    "${RUN_DIR}/victim/detector.state.json" \
+    "${RUN_DIR}/attacker/ip-route.txt" \
+    "${RUN_DIR}/attacker/ip-neigh.txt" \
+    "${RUN_DIR}/attacker/ip-neigh-after.txt" \
+    "${RUN_DIR}/attacker/"*.stderr
 }
 
 explain_saved_run() {

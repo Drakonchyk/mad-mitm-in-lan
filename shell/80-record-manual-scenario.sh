@@ -11,7 +11,11 @@ SKIP_LAB_START="${SKIP_LAB_START:-0}"
 ATTACK_JOB_HOST="${ATTACK_JOB_HOST:-}"
 ATTACK_JOB_LABEL="${ATTACK_JOB_LABEL:-scenario-job}"
 ATTACK_JOB_CMD="${ATTACK_JOB_CMD:-}"
+AUX_JOB_HOST="${AUX_JOB_HOST:-}"
+AUX_JOB_LABEL="${AUX_JOB_LABEL:-aux-job}"
+AUX_JOB_CMD="${AUX_JOB_CMD:-}"
 POST_ATTACK_SETTLE_SECONDS="${POST_ATTACK_SETTLE_SECONDS:-4}"
+PLAN_DURATION_SECONDS="${PLAN_DURATION_SECONDS:-${DURATION_SECONDS}}"
 
 require_experiment_tools
 prepare_run_dir "${SCENARIO_NAME}"
@@ -27,6 +31,8 @@ else
 fi
 
 prepare_victim_detector
+prepare_victim_zeek
+prepare_victim_suricata
 
 DETECTOR_OFFSET="$(remote_file_size victim /var/log/mitm-lab-detector.jsonl)"
 DNSMASQ_OFFSET="$(remote_file_size gateway /var/log/dnsmasq-mitm-lab.log)"
@@ -63,6 +69,12 @@ if [[ -n "${ATTACK_JOB_CMD}" ]]; then
   start_remote_background_job "${ATTACK_JOB_HOST}" "${ATTACK_JOB_LABEL}" "${ATTACK_JOB_CMD}"
 fi
 
+if [[ -n "${AUX_JOB_CMD}" ]]; then
+  info "Starting auxiliary scenario job '${AUX_JOB_LABEL}' on ${AUX_JOB_HOST}"
+  printf '%s\n' "${AUX_JOB_CMD}" > "${RUN_DIR}/${AUX_JOB_HOST}/${AUX_JOB_LABEL}.command.txt"
+  start_remote_background_job "${AUX_JOB_HOST}" "${AUX_JOB_LABEL}" "${AUX_JOB_CMD}"
+fi
+
 info "Capture window is open. Perform the manual scenario now."
 sleep "${DURATION_SECONDS}"
 
@@ -74,20 +86,15 @@ if [[ -n "${ATTACK_JOB_CMD}" ]]; then
   stop_remote_background_job "${ATTACK_JOB_HOST}" "${ATTACK_JOB_LABEL}"
 fi
 
+if [[ -n "${AUX_JOB_CMD}" ]]; then
+  stop_remote_background_job "${AUX_JOB_HOST}" "${AUX_JOB_LABEL}"
+fi
+
 if [[ "${POST_ATTACK_SETTLE_SECONDS}" -gt 0 ]]; then
   info "Running post-window victim probe and waiting ${POST_ATTACK_SETTLE_SECONDS}s for detector recovery logs"
   remote_bash_lc victim \
-    "bash -lc '
-      out=/tmp/${RUN_ID}-${RUN_SLUG}-post-window-probe.txt
-      {
-        echo \"ts=\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
-        ping -c 1 -W 1 ${GATEWAY_IP} || true
-        for domain in ${DETECTOR_DOMAINS}; do
-          echo \"domain=\$domain\"
-          dig +time=1 +tries=1 +short A \"\$domain\" @${DNS_SERVER} || true
-        done
-      } >\"\$out\" 2>&1
-    '" >/dev/null 2>&1 || true
+    "out='/tmp/${RUN_ID}-${RUN_SLUG}-post-window-probe.txt'; { echo \"ts=\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"; ping -c 1 -W 1 '${GATEWAY_IP}' || true; for domain in ${DETECTOR_DOMAINS}; do echo \"domain=\$domain\"; dig +time=1 +tries=1 +short A \"\$domain\" @'${DNS_SERVER}' || true; done; } >\"\$out\" 2>&1" \
+    >/dev/null 2>&1 || true
   sleep "${POST_ATTACK_SETTLE_SECONDS}"
 fi
 
@@ -98,6 +105,7 @@ stop_remote_capture gateway gateway
 save_capture_files
 summarize_saved_pcaps
 fetch_remote_file victim "/tmp/${RUN_ID}-${RUN_SLUG}-traffic.stdout" "${RUN_DIR}/victim/traffic-window.txt" || true
+wait_for_remote_file victim "/tmp/${RUN_ID}-${RUN_SLUG}-post-window-probe.txt" 5 1 || true
 fetch_remote_file victim "/tmp/${RUN_ID}-${RUN_SLUG}-post-window-probe.txt" "${RUN_DIR}/victim/post-window-probe.txt" || true
 capture_remote_command victim "${RUN_DIR}/victim/ip-neigh-after.txt" "ip neigh show"
 capture_remote_command gateway "${RUN_DIR}/gateway/ip-neigh-after.txt" "ip neigh show"
@@ -105,17 +113,26 @@ capture_remote_command attacker "${RUN_DIR}/attacker/ip-neigh-after.txt" "ip nei
 capture_remote_delta victim /var/log/mitm-lab-detector.jsonl "${DETECTOR_OFFSET}" "${RUN_DIR}/victim/detector.delta.jsonl"
 capture_remote_delta gateway /var/log/dnsmasq-mitm-lab.log "${DNSMASQ_OFFSET}" "${RUN_DIR}/gateway/dnsmasq.delta.log"
 fetch_remote_file victim "/var/lib/mitm-lab-detector/state.json" "${RUN_DIR}/victim/detector.state.json" || true
+capture_victim_zeek_artifacts
+capture_victim_suricata_artifacts
 
 if [[ -n "${ATTACK_JOB_CMD}" ]]; then
+  wait_for_remote_file "${ATTACK_JOB_HOST}" "/tmp/${RUN_ID}-${RUN_SLUG}-${ATTACK_JOB_LABEL}.stdout" 5 1 || true
   fetch_remote_file "${ATTACK_JOB_HOST}" "/tmp/${RUN_ID}-${RUN_SLUG}-${ATTACK_JOB_LABEL}.stdout" "${RUN_DIR}/${ATTACK_JOB_HOST}/${ATTACK_JOB_LABEL}.stdout" || true
   fetch_remote_file "${ATTACK_JOB_HOST}" "/tmp/${RUN_ID}-${RUN_SLUG}-${ATTACK_JOB_LABEL}.stderr" "${RUN_DIR}/${ATTACK_JOB_HOST}/${ATTACK_JOB_LABEL}.stderr" || true
 fi
 
+if [[ -n "${AUX_JOB_CMD}" ]]; then
+  wait_for_remote_file "${AUX_JOB_HOST}" "/tmp/${RUN_ID}-${RUN_SLUG}-${AUX_JOB_LABEL}.stdout" 5 1 || true
+  fetch_remote_file "${AUX_JOB_HOST}" "/tmp/${RUN_ID}-${RUN_SLUG}-${AUX_JOB_LABEL}.stdout" "${RUN_DIR}/${AUX_JOB_HOST}/${AUX_JOB_LABEL}.stdout" || true
+  fetch_remote_file "${AUX_JOB_HOST}" "/tmp/${RUN_ID}-${RUN_SLUG}-${AUX_JOB_LABEL}.stderr" "${RUN_DIR}/${AUX_JOB_HOST}/${AUX_JOB_LABEL}.stderr" || true
+fi
+
 ENDED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 write_run_meta "manual-window" "${STARTED_AT}" "${ENDED_AT}" "${SCENARIO_NOTES}"
-analyze_saved_pcaps_with_suricata
 explain_saved_run
 evaluate_saved_run
 
 info "Scenario artifacts saved under ${RUN_DIR}"
 write_summary "${RUN_DIR}"
+prune_run_artifacts

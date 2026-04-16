@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help prereqs networks storage render create-vms start status baseline smoke-test record-scenario summarize evaluate danger-help danger-verify danger-arp-mitm danger-arp-dns danger-arp-mitm-auto danger-arp-dns-auto danger-mitigation danger-compare setup destroy rebuild
+.PHONY: help prereqs networks storage render create-vms start status baseline smoke-test record-scenario summarize evaluate experiment-plan experiment-report danger-help danger-verify danger-arp-mitm danger-arp-dns danger-arp-mitm-auto danger-arp-dns-auto danger-arp-poison-no-forward-auto danger-arp-dns-iana-auto danger-mitigation danger-mitigation-auto danger-compare setup destroy rebuild
 
 help:
 	@printf '%s\n' \
@@ -19,7 +19,11 @@ help:
 		'  make record-scenario NAME=arp-mitm DURATION=60' \
 		'                 Record a time-boxed manual scenario with captures and logs' \
 		'  make summarize  Summarize one run or the whole results/ directory' \
-		'  make evaluate   Compare ground truth, detector alerts, and Suricata alerts' \
+		'  make evaluate   Compare ground truth, detector alerts, Zeek alerts, and Suricata alerts' \
+		'  make experiment-plan' \
+		'                 Run the scripted diploma experiment plan across all scenarios' \
+		'  make experiment-report' \
+		'                 Export CSV/JSON data and build comparison plots from results/' \
 		'  make danger-help' \
 		'                 Show wrappers for manually executed high-risk lab scenarios' \
 		'  make danger-verify' \
@@ -32,8 +36,14 @@ help:
 		'                 Record an automated attacker-side ARP MITM scenario window' \
 		'  make danger-arp-dns-auto DURATION=90' \
 		'                 Record an automated attacker-side ARP + DNS scenario window' \
+		'  make danger-arp-poison-no-forward-auto DURATION=90' \
+		'                 Record automated ARP poisoning without forwarding' \
+		'  make danger-arp-dns-iana-auto DURATION=90' \
+		'                 Record automated ARP + DNS spoofing focused on iana.org' \
 		'  make danger-mitigation DURATION=90' \
 		'                 Record a manual mitigation scenario window' \
+		'  make danger-mitigation-auto DURATION=120' \
+		'                 Record automated mitigation and recovery scenario window' \
 		'  make danger-compare TARGET=results' \
 		'                 Summarize runs collected via dangerous-scenarios helpers' \
 		'  make setup      Run the full setup flow' \
@@ -76,6 +86,12 @@ summarize:
 evaluate:
 	python3 ./python/evaluate_run.py "$(or $(TARGET),results)"
 
+experiment-plan:
+	./shell/85-run-experiment-plan.sh
+
+experiment-report:
+	python3 ./python/plot_experiment_results.py "$(or $(TARGET),results)"
+
 danger-help:
 	$(MAKE) -C dangerous-scenarios help
 
@@ -94,8 +110,17 @@ danger-arp-mitm-auto:
 danger-arp-dns-auto:
 	$(MAKE) -C dangerous-scenarios record-arp-dns-auto DURATION="$(or $(DURATION),90)"
 
+danger-arp-poison-no-forward-auto:
+	$(MAKE) -C dangerous-scenarios record-arp-poison-no-forward-auto DURATION="$(or $(DURATION),90)"
+
+danger-arp-dns-iana-auto:
+	$(MAKE) -C dangerous-scenarios record-arp-dns-iana-auto DURATION="$(or $(DURATION),90)"
+
 danger-mitigation:
 	$(MAKE) -C dangerous-scenarios record-mitigation DURATION="$(or $(DURATION),90)"
+
+danger-mitigation-auto:
+	$(MAKE) -C dangerous-scenarios record-mitigation-auto DURATION="$(or $(DURATION),120)"
 
 danger-compare:
 	$(MAKE) -C dangerous-scenarios compare TARGET="$(or $(TARGET),../results)"

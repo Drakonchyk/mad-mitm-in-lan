@@ -136,16 +136,24 @@ def main() -> int:
     )
 
     counts = Counter(record.get("event", "unknown") for record in detector_records)
-    interesting_counts = {
+    packet_alert_counts = {
+        key: counts[key]
+        for key in (
+            "arp_spoof_packet_seen",
+            "icmp_redirect_packet_seen",
+            "dns_spoof_packet_seen",
+        )
+        if counts.get(key, 0)
+    }
+    state_transition_counts = {
         key: counts[key]
         for key in (
             "gateway_mac_changed",
+            "gateway_mac_restored",
             "multiple_gateway_macs_seen",
+            "single_gateway_mac_restored",
             "icmp_redirects_seen",
             "domain_resolution_changed",
-            "domain_resolution_failed",
-            "domain_resolution_recovered",
-            "gateway_mac_restored",
             "domain_resolution_restored",
         )
         if counts.get(key, 0)
@@ -164,7 +172,8 @@ def main() -> int:
         f"mode={meta.get('mode', '-')}",
         f"attacker_ip={attacker_ip or '-'}",
         f"detector_event_count={len(detector_records)}",
-        "detector_alert_breakdown=" + json.dumps(interesting_counts, sort_keys=True),
+        "detector_packet_alert_breakdown=" + json.dumps(packet_alert_counts, sort_keys=True),
+        "detector_state_transition_breakdown=" + json.dumps(state_transition_counts, sort_keys=True),
         f"probe_summary={probe_status}",
     ]
 

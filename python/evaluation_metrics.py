@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -77,6 +77,10 @@ def parse_iso8601(value: str | datetime | None) -> datetime | None:
         return None
     if isinstance(value, datetime):
         return value
+    try:
+        return datetime.fromtimestamp(float(value), timezone.utc)
+    except ValueError:
+        pass
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 

@@ -13,6 +13,8 @@ info "Starting automated baseline run"
 mkdir -p "$(results_root)"
 start_lab_and_wait_for_access
 prepare_victim_detector
+prepare_victim_zeek
+prepare_victim_suricata
 
 DETECTOR_OFFSET="$(remote_file_size victim /var/log/mitm-lab-detector.jsonl)"
 DNSMASQ_OFFSET="$(remote_file_size gateway /var/log/dnsmasq-mitm-lab.log)"
@@ -50,12 +52,14 @@ capture_remote_command gateway "${RUN_DIR}/gateway/ip-neigh-after.txt" "ip neigh
 capture_remote_delta victim /var/log/mitm-lab-detector.jsonl "${DETECTOR_OFFSET}" "${RUN_DIR}/victim/detector.delta.jsonl"
 capture_remote_delta gateway /var/log/dnsmasq-mitm-lab.log "${DNSMASQ_OFFSET}" "${RUN_DIR}/gateway/dnsmasq.delta.log"
 fetch_remote_file victim "/var/lib/mitm-lab-detector/state.json" "${RUN_DIR}/victim/detector.state.json" || true
+capture_victim_zeek_artifacts
+capture_victim_suricata_artifacts
 
 ENDED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 write_run_meta "automated-baseline" "${STARTED_AT}" "${ENDED_AT}" "Clean traffic run generated entirely by the host automation"
-analyze_saved_pcaps_with_suricata
 explain_saved_run
 evaluate_saved_run
 
 info "Baseline artifacts saved under ${RUN_DIR}"
 write_summary "${RUN_DIR}"
+prune_run_artifacts

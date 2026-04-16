@@ -61,14 +61,12 @@ Recommended extra package for easier cloud image work:
 sudo apt install cloud-image-utils
 ```
 
-Optional host-side comparison tooling:
+Optional comparison note:
 
-```bash
-sudo apt install suricata
-```
-
-If `suricata` is installed and `/etc/suricata/suricata.yaml` exists, runs automatically analyze the saved `victim.pcap` and write artifacts under `results/<run>/suricata/`.
-That offline pass now also generates a small lab-specific ruleset per run so Suricata can alert on ICMP redirects from the attacker and DNS answers that point to the attacker IP.
+- No extra host IDS package is required.
+- Runs now prepare live Zeek and live Suricata sensors on the victim VM and write comparator artifacts under `results/<run>/zeek/` and `results/<run>/suricata/`.
+- The first prepared run may take longer because the victim installs the comparison tooling on demand.
+- Plot generation on the host uses `matplotlib`; install it if you want PNG charts from `make experiment-report`.
 
 If needed, add your user to the libvirt group:
 
@@ -124,6 +122,8 @@ make status
 make baseline
 make smoke-test
 make evaluate
+make experiment-plan
+make experiment-report
 make destroy
 ```
 
@@ -139,16 +139,19 @@ The repo now automates the safe and repeatable parts of the methodology:
 - `make smoke-test` runs a short baseline plus short automated ARP and ARP+DNS checks to validate the end-to-end research pipeline
 - `make record-scenario NAME=arp-mitm DURATION=60` opens a capture window for a manual scenario while the victim generates background traffic
 - `make summarize` prints a compact summary for everything under `results/`
-- `make evaluate` compares ground truth, detector alerts, and Suricata alerts for one run or a whole results tree
+- `make evaluate` compares ground truth, detector alerts, Zeek alerts, and Suricata alerts for one run or a whole results tree
+- `make experiment-plan` runs the scripted diploma experiment set from `experiment_plan.md`
+- `make experiment-report` exports CSV/JSON datasets and builds comparison plots from the collected runs
 
 Key run artifacts to read first:
 
 - `summary.txt` for top-level metrics
 - `victim/detector-explained.txt` for a concise attack timeline from the detector and victim probes
-- `evaluation-summary.txt` for ground-truth attack events versus detector and Suricata alert counts plus time to detection
+- `evaluation-summary.txt` for ground-truth attack events versus detector, Zeek, and Suricata alert counts plus time to detection
 - `evaluation.json` for machine-readable evaluation inputs
 - `pcap/*.tshark-summary.txt` for quick packet-level comparisons
-- `suricata/` when host-side Suricata is available
+- `zeek/` for the live Zeek comparator artifacts
+- `suricata/` for the live Suricata comparator artifacts
 
 Examples:
 
@@ -157,6 +160,8 @@ make baseline
 make smoke-test
 make record-scenario NAME=arp-mitm DURATION=90 NOTE="Manual ARP MITM run in isolated lab"
 make record-scenario NAME=arp-mitm-dns DURATION=90 NOTE="Manual ARP + DNS scenario in isolated lab"
+make experiment-plan
+make experiment-report
 make summarize
 ```
 
@@ -185,6 +190,8 @@ The attack and mitigation actions themselves are intentionally left manual insid
 - gateway `10.20.20.1`
 - DNS `10.20.20.1`
 - detector service logging JSON to `/var/log/mitm-lab-detector.jsonl`
+- live Zeek comparator service writing notices under `/var/log/mitm-lab-zeek/current/`
+- live Suricata comparator service writing EVE alerts under `/var/log/mitm-lab-suricata/current/`
 
 ### Attacker VM
 

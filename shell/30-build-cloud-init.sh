@@ -162,6 +162,7 @@ packages:
   - iperf3
   - python3
   - python3-pip
+  - python3-scapy
   - jq
 users:
   - default
@@ -182,7 +183,7 @@ write_files:
     permissions: '0755'
     owner: root:root
     content: |
-$(indent_rendered_template "${PYTHON_SOURCE_DIR}/mitm_lab_detector.py" GATEWAY_IP "${GATEWAY_IP}" DNS_SERVER "${DNS_SERVER}" PYTHON_DOMAIN_LIST "${PYTHON_DOMAIN_LIST}")
+$(indent_rendered_template "${PYTHON_SOURCE_DIR}/mitm_lab_detector.py" GATEWAY_IP "${GATEWAY_IP}" DNS_SERVER "${DNS_SERVER}" ATTACKER_IP "$(cidr_addr "${ATTACKER_CIDR}")" VICTIM_IP "$(cidr_addr "${VICTIM_CIDR}")" PYTHON_DOMAIN_LIST "${PYTHON_DOMAIN_LIST}")
   - path: /etc/systemd/system/mitm-lab-detector.service
     permissions: '0644'
     owner: root:root

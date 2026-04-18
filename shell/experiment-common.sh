@@ -5,96 +5,98 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 CAPTURE_PACKET_COUNT="${CAPTURE_PACKET_COUNT:-20000}"
-ZEEK_ENABLE="${ZEEK_ENABLE:-auto}"
-SURICATA_ENABLE="${SURICATA_ENABLE:-auto}"
+PCAP_ENABLE="${PCAP_ENABLE:-1}"
+ZEEK_ENABLE="${ZEEK_ENABLE:-0}"
+SURICATA_ENABLE="${SURICATA_ENABLE:-0}"
+DETECTOR_PACKET_SAMPLE_RATE="${DETECTOR_PACKET_SAMPLE_RATE:-1}"
+DETECTOR_HEARTBEAT_SECONDS="${DETECTOR_HEARTBEAT_SECONDS:-10}"
 KEEP_DEBUG_ARTIFACTS="${KEEP_DEBUG_ARTIFACTS:-0}"
 ZEEK_ACTIVE=0
 SURICATA_ACTIVE=0
+SURICATA_ARP_RULE_ACTIVE=0
+PCAP_ACTIVE=0
+
+lab_python_module() {
+  PYTHONPATH="${LAB_DIR}/python${PYTHONPATH:+:${PYTHONPATH}}" python3 -m "$@"
+}
 
 require_experiment_tools() {
   require_cmd ssh
   require_cmd scp
   require_cmd python3
-  require_cmd tshark
+  if pcap_requested; then
+    require_cmd tshark
+  fi
+}
+
+pcap_requested() {
+  case "${PCAP_ENABLE}" in
+    1|true|yes|on|auto)
+      return 0
+      ;;
+    0|false|no|off)
+      return 1
+      ;;
+    *)
+      warn "Unknown PCAP_ENABLE value: ${PCAP_ENABLE}; disabling pcap capture"
+      return 1
+      ;;
+  esac
 }
 
 render_victim_detector() {
   local outfile="$1"
 
-  python3 - "$LAB_DIR" "$outfile" <<'PY'
-from pathlib import Path
-import sys
-
-repo_root = Path(sys.argv[1])
-output_path = Path(sys.argv[2])
-sys.path.insert(0, str(repo_root / "python"))
-
-from lab_config import load_lab_config, load_lab_settings  # noqa: E402
-
-config = load_lab_config(repo_root / "lab.conf")
-settings = load_lab_settings(repo_root / "lab.conf")
-domain_list = ", ".join(repr(domain) for domain in config["DETECTOR_DOMAINS"].split() if domain)
-source = (repo_root / "python" / "mitm_lab_detector.py").read_text(encoding="utf-8")
-rendered = (
-    source.replace("__GATEWAY_IP__", config["GATEWAY_IP"])
-    .replace("__DNS_SERVER__", config["DNS_SERVER"])
-    .replace("__ATTACKER_IP__", str(settings.attacker_ip))
-    .replace("__VICTIM_IP__", str(settings.victim_ip))
-    .replace("__PYTHON_DOMAIN_LIST__", domain_list)
-)
-output_path.write_text(rendered, encoding="utf-8")
-PY
+  lab_python_module lab.cli render-detector "${LAB_DIR}" "${outfile}"
 }
 
 render_victim_zeek_policy() {
   local outfile="$1"
 
-  python3 - "$LAB_DIR" "$outfile" <<'PY'
-from pathlib import Path
-import sys
-
-repo_root = Path(sys.argv[1])
-output_path = Path(sys.argv[2])
-sys.path.insert(0, str(repo_root / "python"))
-
-from lab_config import load_lab_config  # noqa: E402
-
-config = load_lab_config(repo_root / "lab.conf")
-domains = ", ".join(f'"{domain.lower()}"' for domain in config["DETECTOR_DOMAINS"].split() if domain)
-source = (repo_root / "config" / "mitm-lab-live.zeek").read_text(encoding="utf-8")
-rendered = (
-    source.replace("__GATEWAY_IP__", config["GATEWAY_IP"])
-    .replace("__DNS_SERVER__", config["DNS_SERVER"])
-    .replace("__ATTACKER_IP__", config["ATTACKER_CIDR"].split("/", 1)[0])
-    .replace("__VICTIM_IP__", config["VICTIM_CIDR"].split("/", 1)[0])
-    .replace("__ATTACKER_MAC__", config["ATTACKER_MAC"].lower())
-    .replace("__GATEWAY_MAC__", config["GATEWAY_LAB_MAC"].lower())
-    .replace("__ZEEK_DOMAIN_SET__", domains)
-)
-output_path.write_text(rendered, encoding="utf-8")
-PY
+  lab_python_module lab.cli render-zeek-policy "${LAB_DIR}" "${outfile}"
 }
 
 render_victim_suricata_rules() {
   local outfile="$1"
+  local include_arp="${2:-1}"
   local attacker_ip victim_ip gateway_ip a b c d attacker_ip_hex
+  local attacker_mac attacker_mac_hex gateway_ip_hex victim_ip_hex
+  local m1 m2 m3 m4 m5 m6
 
   attacker_ip="$(cidr_addr "${ATTACKER_CIDR}")"
   victim_ip="$(cidr_addr "${VICTIM_CIDR}")"
   gateway_ip="${GATEWAY_IP}"
+  attacker_mac="${ATTACKER_MAC,,}"
   IFS=. read -r a b c d <<< "${attacker_ip}"
   printf -v attacker_ip_hex '|%02X %02X %02X %02X|' "${a}" "${b}" "${c}" "${d}"
+  IFS=. read -r a b c d <<< "${gateway_ip}"
+  printf -v gateway_ip_hex '|%02X %02X %02X %02X|' "${a}" "${b}" "${c}" "${d}"
+  IFS=. read -r a b c d <<< "${victim_ip}"
+  printf -v victim_ip_hex '|%02X %02X %02X %02X|' "${a}" "${b}" "${c}" "${d}"
+  IFS=: read -r m1 m2 m3 m4 m5 m6 <<< "${attacker_mac}"
+  printf -v attacker_mac_hex '|%s %s %s %s %s %s|' \
+    "${m1^^}" "${m2^^}" "${m3^^}" "${m4^^}" "${m5^^}" "${m6^^}"
 
-  cat > "${outfile}" <<EOF
+  {
+    if [[ "${include_arp}" == "1" ]]; then
+      printf '%s\n' \
+        "alert ether any any -> any any (msg:\"MITM-LAB live ARP reply from attacker claims gateway IP to victim\"; ether.hdr; content:\"${attacker_mac_hex}\"; offset:6; depth:6; content:\"|08 06|\"; offset:12; depth:2; content:\"|00 02|\"; offset:20; depth:2; content:\"${gateway_ip_hex}\"; offset:28; depth:4; content:\"${victim_ip_hex}\"; offset:38; depth:4; classtype:attempted-admin; sid:9901000; rev:1;)"
+    fi
+    cat <<EOF
 alert icmp ${attacker_ip} any -> ${victim_ip} any (msg:"MITM-LAB live ICMP redirect from attacker to victim"; itype:5; classtype:attempted-admin; sid:9901001; rev:1;)
 alert udp ${gateway_ip} 53 -> ${victim_ip} any (msg:"MITM-LAB live DNS answer contains attacker IP"; content:"${attacker_ip_hex}"; classtype:bad-unknown; sid:9901002; rev:1;)
 EOF
+  } > "${outfile}"
 }
 
 prepare_victim_detector() {
-  local rendered_detector
+  local rendered_detector detector_override
   rendered_detector="$(mktemp)"
+  detector_override="$(mktemp)"
   render_victim_detector "${rendered_detector}"
+  printf '[Service]\nEnvironment=MITM_LAB_PACKET_SAMPLE_RATE=%s\nEnvironment=MITM_LAB_HEARTBEAT_SECONDS=%s\n' \
+    "${DETECTOR_PACKET_SAMPLE_RATE}" \
+    "${DETECTOR_HEARTBEAT_SECONDS}" > "${detector_override}"
 
   info "Refreshing victim gateway neighbor state before detector baseline"
   remote_sudo_bash_lc victim \
@@ -104,15 +106,20 @@ prepare_victim_detector() {
 
   info "Deploying current detector source to victim"
   lab_scp_to victim "${rendered_detector}" "/tmp/mitm_lab_detector.py"
+  lab_scp_to victim "${detector_override}" "/tmp/mitm-lab-detector.override.conf"
   remote_sudo_bash_lc victim \
     "if ! python3 -c 'import scapy.all' >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3-scapy; fi
+     install -d -m 0755 '/etc/systemd/system/mitm-lab-detector.service.d'
      install -m 0755 '/tmp/mitm_lab_detector.py' '/usr/local/bin/mitm_lab_detector.py'
-     rm -f '/tmp/mitm_lab_detector.py'
+     install -m 0644 '/tmp/mitm-lab-detector.override.conf' '/etc/systemd/system/mitm-lab-detector.service.d/override.conf'
+     rm -f '/tmp/mitm_lab_detector.py' '/tmp/mitm-lab-detector.override.conf'
      rm -f '/var/lib/mitm-lab-detector/state.json'
+     systemctl daemon-reload
      systemctl restart mitm-lab-detector.service
      systemctl is-active --quiet mitm-lab-detector.service"
 
   rm -f "${rendered_detector}"
+  rm -f "${detector_override}"
   prime_victim_detector_domains
   wait_for_victim_detector_baseline
 }
@@ -202,12 +209,13 @@ prepare_victim_suricata() {
   local rendered_rules
 
   SURICATA_ACTIVE=0
+  SURICATA_ARP_RULE_ACTIVE=0
   if ! suricata_requested; then
     return 0
   fi
 
   rendered_rules="$(mktemp)"
-  render_victim_suricata_rules "${rendered_rules}"
+  render_victim_suricata_rules "${rendered_rules}" 1
 
   info "Deploying live Suricata comparison sensor to victim"
   lab_scp_to victim "${rendered_rules}" "/tmp/mitm-lab-suricata.rules"
@@ -215,21 +223,48 @@ prepare_victim_suricata() {
   lab_scp_to victim "${LAB_DIR}/services/mitm-lab-suricata.service" "/tmp/mitm-lab-suricata.service"
 
   if remote_sudo_bash_lc victim \
-    "if ! command -v suricata >/dev/null 2>&1; then
+    "set -euo pipefail
+     need_upgrade=0
+     if ! command -v suricata >/dev/null 2>&1; then
+       need_upgrade=1
+     elif ! suricata --build-info 2>/dev/null | sed -n '1p' | grep -Eq 'version 8\\.'; then
+       need_upgrade=1
+     fi
+     if [[ \"\${need_upgrade}\" == '1' ]]; then
        apt-get update
+       DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common ca-certificates
+       add-apt-repository -y ppa:oisf/suricata-stable
+       apt-get update
+       DEBIAN_FRONTEND=noninteractive apt-get remove -y suricata-update || true
        DEBIAN_FRONTEND=noninteractive apt-get install -y suricata
      fi
      install -d -m 0755 '/etc/mitm-lab' '/var/log/mitm-lab-suricata/current'
      install -m 0644 '/tmp/mitm-lab-suricata.rules' '/etc/mitm-lab/mitm-lab-suricata.rules'
      install -m 0755 '/tmp/mitm-lab-suricata-live.sh' '/usr/local/bin/mitm-lab-suricata-live.sh'
      install -m 0644 '/tmp/mitm-lab-suricata.service' '/etc/systemd/system/mitm-lab-suricata.service'
-     rm -f '/tmp/mitm-lab-suricata.rules' '/tmp/mitm-lab-suricata-live.sh' '/tmp/mitm-lab-suricata.service'
-     rm -f /var/log/mitm-lab-suricata/current/*.json /var/log/mitm-lab-suricata/current/*.log
-     systemctl daemon-reload
-     systemctl enable --now mitm-lab-suricata.service
-     systemctl restart mitm-lab-suricata.service
-     systemctl is-active --quiet mitm-lab-suricata.service"; then
-    SURICATA_ACTIVE=1
+     rm -f '/tmp/mitm-lab-suricata.rules' '/tmp/mitm-lab-suricata-live.sh' '/tmp/mitm-lab-suricata.service'"; then
+    if remote_sudo_bash_lc victim "suricata -T -c '/etc/suricata/suricata.yaml' -S '/etc/mitm-lab/mitm-lab-suricata.rules' >/tmp/mitm-lab-suricata-test.log 2>&1"; then
+      SURICATA_ARP_RULE_ACTIVE=1
+    else
+      warn "Victim Suricata rejected the ARP comparison rule; falling back to ICMP+DNS only"
+      render_victim_suricata_rules "${rendered_rules}" 0
+      lab_scp_to victim "${rendered_rules}" "/tmp/mitm-lab-suricata.rules"
+      remote_sudo_bash_lc victim \
+        "install -m 0644 '/tmp/mitm-lab-suricata.rules' '/etc/mitm-lab/mitm-lab-suricata.rules'
+         rm -f '/tmp/mitm-lab-suricata.rules'"
+      SURICATA_ARP_RULE_ACTIVE=0
+    fi
+
+    if remote_sudo_bash_lc victim \
+      "rm -f /var/log/mitm-lab-suricata/current/*.json /var/log/mitm-lab-suricata/current/*.log
+       systemctl daemon-reload
+       systemctl enable --now mitm-lab-suricata.service
+       systemctl restart mitm-lab-suricata.service
+       systemctl is-active --quiet mitm-lab-suricata.service"; then
+      SURICATA_ACTIVE=1
+    else
+      warn "Victim Suricata service could not be started after preparation; continuing without Suricata comparison for this run"
+    fi
   else
     warn "Victim Suricata service could not be prepared; continuing without Suricata comparison for this run"
   fi
@@ -290,14 +325,12 @@ prepare_attacker_research_workspace() {
     "mkdir -p '${remote_root}/python' && chown -R '${LAB_USER}:${LAB_USER}' '${remote_root}'"
 
   lab_scp_to attacker "${LAB_DIR}/lab.conf" "${remote_root}/lab.conf"
-  lab_scp_to attacker "${LAB_DIR}/python/lab_config.py" "${remote_root}/python/lab_config.py"
-  lab_scp_to attacker "${LAB_DIR}/python/lab_network.py" "${remote_root}/python/lab_network.py"
-  lab_scp_to attacker "${LAB_DIR}/python/mitm_research.py" "${remote_root}/python/mitm_research.py"
-  lab_scp_to attacker "${LAB_DIR}/python/setup_all.py" "${remote_root}/python/setup_all.py"
+  lab_scp_to attacker "${LAB_DIR}/python/lab" "${remote_root}/python/lab"
+  lab_scp_to attacker "${LAB_DIR}/python/mitm" "${remote_root}/python/mitm"
 
   remote_bash_lc attacker \
-    "chmod 0644 '${remote_root}/lab.conf' '${remote_root}/python/'*.py && chmod 0755 '${remote_root}/python/setup_all.py'"
-  remote_bash_lc attacker "python3 -c 'import scapy.all'"
+    "find '${remote_root}/python' -type f -name '*.py' -exec chmod 0644 {} + && chmod 0644 '${remote_root}/lab.conf'"
+  remote_bash_lc attacker "PYTHONPATH='${remote_root}/python' python3 -c 'import mitm.cli, scapy.all'"
 }
 
 cleanup_attacker_dns_block_rules() {
@@ -353,14 +386,7 @@ json_number_or_null() {
 }
 
 json_string_array_from_words() {
-  python3 - "$1" <<'PY'
-import json
-import sys
-
-text = sys.argv[1].strip()
-items = [item for item in text.split() if item]
-print(json.dumps(items))
-PY
+  lab_python_module lab.cli json-string-array "$1"
 }
 
 timestamp_at_offset_or_null() {
@@ -372,15 +398,7 @@ timestamp_at_offset_or_null() {
     return 0
   fi
 
-  python3 - "$base_ts" "$offset" <<'PY'
-from datetime import datetime, timedelta, timezone
-import sys
-
-base = datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
-offset = float(sys.argv[2])
-ts = (base + timedelta(seconds=offset)).astimezone(timezone.utc).isoformat()
-print(json.dumps(ts))
-PY
+  lab_python_module lab.cli timestamp-at-offset "$base_ts" "$offset"
 }
 
 scenario_slug() {
@@ -402,12 +420,13 @@ prepare_run_dir() {
   RUN_SCENARIO="${scenario}"
   RUN_SLUG="${slug}"
   RUN_DIR="$(results_root)/${RUN_ID}-${RUN_SLUG}"
+  PCAP_ACTIVE=0
 
   mkdir -p "${RUN_DIR}/host" "${RUN_DIR}/gateway" "${RUN_DIR}/victim" "${RUN_DIR}/attacker" "${RUN_DIR}/pcap"
 }
 
 start_lab_and_wait_for_access() {
-  "${SCRIPT_DIR}/50-start-lab.sh" >/dev/null
+  "${LAB_DIR}/shell/lab/start-lab.sh" >/dev/null
 
   info "Waiting for SSH access to ${GATEWAY_NAME}"
   wait_for_lab_ssh gateway
@@ -474,8 +493,11 @@ write_run_meta() {
   "capture_packet_count": ${CAPTURE_PACKET_COUNT},
   "gateway_upstream_ip": "$(gateway_upstream_ip)",
   "gateway_lab_ip": "${GATEWAY_IP}",
+  "gateway_lab_mac": "${GATEWAY_LAB_MAC}",
   "victim_ip": "$(cidr_addr "${VICTIM_CIDR}")",
+  "victim_mac": "${VICTIM_MAC}",
   "attacker_ip": "$(cidr_addr "${ATTACKER_CIDR}")",
+  "attacker_mac": "${ATTACKER_MAC}",
   "run_index": ${run_index_json},
   "warmup": ${warmup_json},
   "duration_seconds": ${duration_json},
@@ -485,8 +507,10 @@ write_run_meta() {
   "forwarding_enabled": ${forwarding_json},
   "dns_spoof_enabled": ${dns_spoof_json},
   "spoofed_domains": ${spoofed_domains_json},
+  "pcap_enabled": $(json_bool "${PCAP_ACTIVE:-0}"),
   "zeek_enabled": $(json_bool "${ZEEK_ACTIVE:-0}"),
   "suricata_enabled": $(json_bool "${SURICATA_ACTIVE:-0}"),
+  "suricata_arp_rule_enabled": $(json_bool "${SURICATA_ARP_RULE_ACTIVE:-0}"),
   "notes": "$(json_escape "${notes}")",
   "domains": "$(json_escape "${DETECTOR_DOMAINS}")"
 }
@@ -538,6 +562,12 @@ start_remote_capture() {
   local iface="$2"
   local label="$3"
 
+  if ! pcap_requested; then
+    return 0
+  fi
+
+  PCAP_ACTIVE=1
+
   local remote_base="/tmp/${RUN_ID}-${RUN_SLUG}-${label}"
   local pcap="${remote_base}.pcap"
   local pid_file="${remote_base}.pid"
@@ -554,6 +584,10 @@ start_remote_capture() {
 stop_remote_capture() {
   local host="$1"
   local label="$2"
+
+  if [[ "${PCAP_ACTIVE:-0}" != "1" ]]; then
+    return 0
+  fi
 
   local remote_base="/tmp/${RUN_ID}-${RUN_SLUG}-${label}"
   local pid_file="${remote_base}.pid"
@@ -748,6 +782,10 @@ save_tool_versions() {
 }
 
 save_capture_files() {
+  if [[ "${PCAP_ACTIVE:-0}" != "1" ]]; then
+    return 0
+  fi
+
   fetch_remote_file gateway "/tmp/${RUN_ID}-${RUN_SLUG}-gateway.pcap" "${RUN_DIR}/pcap/gateway.pcap" || true
   fetch_remote_file victim "/tmp/${RUN_ID}-${RUN_SLUG}-victim.pcap" "${RUN_DIR}/pcap/victim.pcap" || true
   fetch_remote_file attacker "/tmp/${RUN_ID}-${RUN_SLUG}-attacker.pcap" "${RUN_DIR}/pcap/attacker.pcap" || true
@@ -816,6 +854,10 @@ write_tshark_summary() {
 }
 
 summarize_saved_pcaps() {
+  if [[ "${PCAP_ACTIVE:-0}" != "1" ]]; then
+    return 0
+  fi
+
   while IFS= read -r -d '' pcap_path; do
     write_tshark_summary "${pcap_path}"
   done < <(find "${RUN_DIR}/pcap" -maxdepth 1 -type f -name '*.pcap' -print0 | sort -z)
@@ -865,7 +907,7 @@ capture_victim_zeek_artifacts() {
   fi
 
   if [[ -f "${notice_path}" ]]; then
-    python3 "${LAB_DIR}/python/summarize_zeek_notice.py" "${notice_path}" > "${summary_path}" 2>&1 || true
+    PYTHONPATH="${LAB_DIR}/python${PYTHONPATH:+:${PYTHONPATH}}" python3 -m logs.zeek_notice "${notice_path}" > "${summary_path}" 2>&1 || true
     write_zeek_status "zeek_status=ok"
   else
     write_zeek_status "zeek_status=ok_no_notice"
@@ -907,7 +949,7 @@ capture_victim_suricata_artifacts() {
   fi
 
   if [[ -f "${eve_path}" ]]; then
-    python3 "${LAB_DIR}/python/summarize_suricata_eve.py" "${eve_path}" > "${summary_path}" 2>&1 || true
+    PYTHONPATH="${LAB_DIR}/python${PYTHONPATH:+:${PYTHONPATH}}" python3 -m logs.suricata_eve "${eve_path}" > "${summary_path}" 2>&1 || true
     write_suricata_status "suricata_status=ok"
   else
     write_suricata_status "suricata_status=ok_no_eve"
@@ -920,10 +962,14 @@ prune_run_artifacts() {
   fi
 
   rm -f \
+    "${RUN_DIR}/host/versions.txt" \
     "${RUN_DIR}/gateway/ip-route.txt" \
     "${RUN_DIR}/gateway/ip-neigh.txt" \
     "${RUN_DIR}/gateway/ip-neigh-after.txt" \
     "${RUN_DIR}/gateway/dnsmasq-service.txt" \
+    "${RUN_DIR}/gateway/dnsmasq.delta.log" \
+    "${RUN_DIR}/gateway/iperf-server.log" \
+    "${RUN_DIR}/gateway/versions.txt" \
     "${RUN_DIR}/victim/ip-route.txt" \
     "${RUN_DIR}/victim/ip-neigh.txt" \
     "${RUN_DIR}/victim/ip-neigh-after.txt" \
@@ -931,23 +977,31 @@ prune_run_artifacts() {
     "${RUN_DIR}/victim/zeek-service.txt" \
     "${RUN_DIR}/victim/suricata-service.txt" \
     "${RUN_DIR}/victim/detector.state.json" \
+    "${RUN_DIR}/victim/post-window-probe.txt" \
+    "${RUN_DIR}/victim/versions.txt" \
     "${RUN_DIR}/attacker/ip-route.txt" \
     "${RUN_DIR}/attacker/ip-neigh.txt" \
     "${RUN_DIR}/attacker/ip-neigh-after.txt" \
-    "${RUN_DIR}/attacker/"*.stderr
+    "${RUN_DIR}/attacker/versions.txt" \
+    "${RUN_DIR}/attacker/"*.command.txt \
+    "${RUN_DIR}/attacker/"*.stdout \
+    "${RUN_DIR}/attacker/"*.stderr \
+    "${RUN_DIR}/pcap/attacker.pcap" \
+    "${RUN_DIR}/pcap/gateway.pcap" \
+    "${RUN_DIR}/pcap/"*.tshark-summary.txt
 }
 
 explain_saved_run() {
-  python3 "${LAB_DIR}/python/explain_run.py" "${RUN_DIR}" > "${RUN_DIR}/victim/detector-explained.txt" 2>&1 || true
+  PYTHONPATH="${LAB_DIR}/python${PYTHONPATH:+:${PYTHONPATH}}" python3 -m logs.explain_run "${RUN_DIR}" > "${RUN_DIR}/victim/detector-explained.txt" 2>&1 || true
 }
 
 evaluate_saved_run() {
-  python3 "${LAB_DIR}/python/evaluate_run.py" "${RUN_DIR}" \
+  lab_python_module metrics.evaluator "${RUN_DIR}" \
     --json-out "${RUN_DIR}/evaluation.json" \
     --text-out "${RUN_DIR}/evaluation-summary.txt" >/dev/null 2>&1 || true
 }
 
 write_summary() {
   local target="${1:-${RUN_DIR}}"
-  python3 "${LAB_DIR}/python/summarize_results.py" "${target}" | tee "${target}/summary.txt"
+  lab_python_module metrics.summary_cli "${target}" | tee "${target}/summary.txt"
 }

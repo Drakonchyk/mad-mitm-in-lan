@@ -45,8 +45,12 @@ event arp_reply(mac_src: string, mac_dst: string, SPA: addr, SHA: string, TPA: a
             $dst=victim_ip]);
     }
 
-event icmp_redirect(c: connection, info: icmp_info, tgt: addr, dest: addr, options: icmp6_nd_options)
+event icmp_sent(c: connection, info: icmp_info)
     {
+    # Zeek 8.1.1 sees these IPv4 redirects through icmp_sent() on this trace.
+    if ( c$id$orig_p != 5/icmp )
+        return;
+
     if ( c$id$orig_h != attacker_ip )
         return;
 
@@ -55,7 +59,7 @@ event icmp_redirect(c: connection, info: icmp_info, tgt: addr, dest: addr, optio
 
     NOTICE([$note=ICMP_Redirect,
             $msg=fmt("ICMP redirect from %s to %s", c$id$orig_h, c$id$resp_h),
-            $sub=fmt("better_hop=%s redirected_dest=%s", tgt, dest),
+            $sub=fmt("icmp_type=%s icmp_code=%s", c$id$orig_p, c$id$resp_p),
             $src=c$id$orig_h,
             $dst=c$id$resp_h]);
     }

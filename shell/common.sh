@@ -254,6 +254,7 @@ lab_scp_from() {
   addr="$(lab_host_ip "$host")"
   local scp_args=(
     -i "$key"
+    -r
     -o StrictHostKeyChecking=no
     -o UserKnownHostsFile=/dev/null
     -o LogLevel=ERROR
@@ -284,6 +285,7 @@ lab_scp_to() {
   addr="$(lab_host_ip "$host")"
   local scp_args=(
     -i "$key"
+    -r
     -o StrictHostKeyChecking=no
     -o UserKnownHostsFile=/dev/null
     -o LogLevel=ERROR

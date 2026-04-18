@@ -1,0 +1,82 @@
+# Evaluation Metrics
+
+This page defines the metrics used in the generated reports.
+
+## Detection Metrics
+
+- `detected`
+  - whether a run produced at least one relevant alert for the scenario
+- `time_to_first_alert`
+  - delay between the alert and the timing basis used for comparison
+- `true_positive_rate`
+  - fraction of positive runs correctly detected
+- `false_positive_rate`
+  - fraction of negative runs that still produced alerts
+- `precision`
+  - fraction of positive predictions that were correct
+- `f1`
+  - harmonic mean of precision and recall
+
+## Timing Basis
+
+The report uses two timing notions:
+
+- raw attack-start timing
+  - used only for chronology and debugging
+  - starts from the earliest observed ground-truth attack evidence
+- comparison-basis timing
+  - used for report figures and tool comparisons
+  - starts from the first ground-truth attack evidence that the sensor actually supports
+
+That means detector, Zeek, and Suricata are compared on a consistent basis even when their supported attack evidence differs.
+
+## Detector Semantic Alerts
+
+The thesis-level detector alert count uses semantic detector state transitions rather than raw packet-observation events.
+
+Included semantic detector alerts:
+
+- `gateway_mac_changed`
+- `multiple_gateway_macs_seen`
+- `icmp_redirects_seen`
+- `domain_resolution_changed`
+- `gateway_mac_restored`
+- `single_gateway_mac_restored`
+- `domain_resolution_restored`
+
+Raw packet-level observations such as `arp_spoof_packet_seen` are still preserved in `detector.delta.jsonl`, but they are not the main alert count shown in summaries and thesis plots.
+
+## Recovery Metrics
+
+- `first_restored_ts`
+  - first restoration-related detector event after mitigation
+- `time_to_recovery`
+  - delay between `mitigation_started_at` and the first restoration event
+
+## Operational Metrics
+
+- `ping_gateway_avg_ms`
+  - mean gateway latency from the victim probe loop
+- `ping_attacker_avg_ms`
+  - mean latency to the attacker host from the victim probe loop
+- `curl_total_s`
+  - mean `curl time_total` from the victim probe loop
+- `iperf_mbps`
+  - throughput from the per-run `iperf3.json` sample
+
+## Files Used To Compute Metrics
+
+- run metadata:
+  - `run-meta.json`
+- detector events:
+  - `victim/detector.delta.jsonl`
+- victim probe loop:
+  - `victim/traffic-window.txt`
+- throughput sample:
+  - `victim/iperf3.json`
+- Zeek comparator:
+  - `zeek/victim/notice.log`
+- Suricata comparator:
+  - `suricata/victim/eve.json`
+- optional wire truth support:
+  - `pcap/victim.pcap`

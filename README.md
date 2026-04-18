@@ -1,227 +1,275 @@
 # MITM Diploma Lab
 
-This repo builds a **safe, isolated** 3-VM libvirt lab described in
-`testbed_setup_guide.md`.
+## What This Project Is
+
+This repository builds a small, isolated libvirt lab for studying LAN man-in-the-middle behavior and evaluating a victim-side detector against optional Zeek and Suricata comparators.
+
+The lab contains three virtual machines:
 
 - `mitm-gateway`
 - `mitm-victim`
 - `mitm-attacker`
-- libvirt NAT network: `default`
-- isolated lab network: `mitm-lab`
 
-It also renders repeatable lab assets for:
+The project automates:
 
-- static guest network config
-- gateway NAT and DNS forwarding
-- a simple victim-side detector service
-- libvirt provisioning, experiment capture, and teardown
+- lab provisioning and teardown;
+- repeatable scenario execution for the main experiment set;
+- supplementary stress scenarios for extra analysis;
+- collection of the per-run artifacts needed for plots and interpretation;
+- dataset export, tables, and figures for the main, supplementary, and demo reports.
 
-## Important
+Useful companion docs:
 
-- This project is for an **isolated local lab only**.
-- It does **not** automate poisoning, spoofing, packet injection, or attack tooling.
-- The scripts target system libvirt at `qemu:///system`.
-- Downloaded images live under `storage/`.
-- Rendered cloud-init and helper files live under `generated/`.
-- Experiment artifacts are written under `results/`.
-- If your shell cannot talk to system libvirt directly yet, the scripts fall back to `sg libvirt -c ...`.
+- [Topology](docs/topology.md)
+- [Repo Architecture](docs/repo-architecture.md)
+- [Experiments](docs/experiments.md)
+- [Scenario Definitions](docs/scenario-definitions.md)
+- [Evaluation Metrics](docs/evaluation-metrics.md)
+- [Artifact Map](docs/artifact-map.md)
+- [Command Reference](docs/command-reference.md)
 
-## Project Layout
+## Threat Model
 
-- `lab.conf` - main lab configuration
-- `Makefile` - polished entry point for common lab tasks
-- `dangerous-scenarios/` - clearly marked wrappers for recording manual high-risk lab scenarios
-- `libvirt/*.xml` - network definitions
-- `shell/` - Bash scripts for host orchestration plus the guest gateway bootstrap script
-- `python/` - Python utilities such as the guest detector source, config helpers, and result summarization
-- `services/` - static systemd unit files copied into guests
-- `config/` - static config files copied into guests
+The detector is meant to observe signs of local-LAN MITM behavior from the victim side inside a controlled research environment.
 
-## Default Network Plan
+The main attack families modeled here are:
 
-- Gateway: `10.20.20.1/24`
-- Victim: `10.20.20.10/24`
-- Attacker: `10.20.20.66/24`
-- Victim and attacker gateway: `10.20.20.1`
-- Victim and attacker DNS: `10.20.20.1`
+- ARP poisoning without forwarding;
+- transparent ARP MITM with forwarding enabled;
+- ARP MITM plus focused DNS spoofing;
+- mitigation and recovery after the victim restores the legitimate gateway neighbor entry.
 
-## Host Prerequisites
+This is a research testbed, not a production hardening framework.
 
-Install the host packages from the guide first:
+## Topology
+
+The lab uses two libvirt networks:
+
+- `default`: upstream NAT network for host-provided connectivity;
+- `mitm-lab`: isolated lab network on `virbr11`.
+
+Address plan:
+
+- gateway: `10.20.20.1/24`
+- victim: `10.20.20.10/24`
+- attacker: `10.20.20.66/24`
+
+Where components live:
+
+- detector: victim VM, always enabled during experiment runs;
+- Zeek comparator: victim VM, optional, disabled by default;
+- Suricata comparator: victim VM, optional, disabled by default;
+- packet captures: optional per run;
+- orchestration and report generation: host machine.
+
+The architecture diagram is in [docs/topology.md](docs/topology.md).
+
+## Scenario Set
+
+Main evaluation scenarios:
+
+- `baseline`
+- `arp-poison-no-forward`
+- `arp-mitm-forward`
+- `arp-mitm-dns`
+- `mitigation-recovery`
+
+Supplementary scenarios:
+
+- `intermittent-arp-mitm-dns`
+- `noisy-benign-baseline`
+- `reduced-observability`
+
+The explanatory experiment overview is in [docs/experiments.md](docs/experiments.md), and the exact timing windows are in [docs/scenario-definitions.md](docs/scenario-definitions.md).
+
+## Quick Start
+
+Install the host prerequisites first:
 
 ```bash
 sudo apt update
 sudo apt install qemu-kvm libvirt-daemon-system virt-manager cpu-checker \
   wireshark tshark tcpdump python3-pip git jq curl iperf3 dnsutils
-```
-
-Recommended extra package for easier cloud image work:
-
-```bash
 sudo apt install cloud-image-utils
 ```
 
-Optional comparison note:
-
-- No extra host IDS package is required.
-- Runs now prepare live Zeek and live Suricata sensors on the victim VM and write comparator artifacts under `results/<run>/zeek/` and `results/<run>/suricata/`.
-- The first prepared run may take longer because the victim installs the comparison tooling on demand.
-- Plot generation on the host uses `matplotlib`; install it if you want PNG charts from `make experiment-report`.
-
-If needed, add your user to the libvirt group:
+If needed, add your user to the `libvirt` group and log back in:
 
 ```bash
 sudo adduser "$USER" libvirt
 ```
 
-Then log out and back in before provisioning the lab.
-
-## Quick Start
-
-Run everything from the repository root:
-
-```bash
-cd /path/to/mad-mitm-in-lan
-```
-
-Review the main settings if needed:
-
-```bash
-nano lab.conf
-```
-
-See the available commands:
-
-```bash
-make help
-```
-
-Provision the full lab:
-
-```bash
-make setup
-```
-
-Check status later with:
-
-```bash
-make status
-```
-
-If direct libvirt access still fails from your current shell, log out and back in once, or use the `sg libvirt -c ...` examples below.
-
-The repo ignores `generated/`, `storage/`, and `results/` so local lab artifacts do not clutter version control.
-
-Useful day-to-day commands:
+Then from the repository root:
 
 ```bash
 make prereqs
+make setup
+make status
+```
+
+Common run toggles:
+
+- detector: always on for experiment runs;
+- Zeek: `ZEEK_ENABLE=1` to enable, default is disabled;
+- Suricata: `SURICATA_ENABLE=1` to enable, default is disabled;
+- pcap capture: enabled by default, disable with `PCAP_ENABLE=0`.
+
+Example:
+
+```bash
+ZEEK_ENABLE=1 SURICATA_ENABLE=1 make baseline
+PCAP_ENABLE=0 make baseline
+```
+
+## Demo Path
+
+The repo has one compact demo path that mirrors the retained sample dataset:
+
+```bash
+make demo-start
+make demo-scenario
+make demo-report
+make demo-capture HOST=victim IFACE=vnic0 FILTER="arp or icmp or port 53"
+```
+
+What these do:
+
+- `make demo-start`: provisions the lab if needed and ensures it is running;
+- `make demo-scenario`: runs the focused `arp-mitm-dns` scenario used as the canonical live demo path;
+- `make demo-report`: builds a small deterministic report from at most one retained measured run per scenario into `results/demo-report/`;
+- `make demo-capture`: opens a live `tcpdump` stream on a chosen VM until `Ctrl-C`.
+
+## Dangerous Operations Warning
+
+This repository is for an isolated local lab only.
+
+- Do not point these scripts at a real network.
+- Do not run the direct scenario commands outside the dedicated lab.
+- The attacker-side automation is intentionally limited to the isolated VMs created by this repo.
+- The high-risk scenario entry points now live under `shell/scenarios/` and are exposed through a small set of top-level `make scenario-*` targets.
+
+## Artifact Layout
+
+Top-level layout:
+
+- `Makefile`: common entry points;
+- `mk/`: grouped make target definitions;
+- `shell/lab/`: lab lifecycle and provisioning scripts;
+- `shell/experiments/`: experiment-plan and scenario-window orchestration;
+- `shell/scenarios/`: direct automated scenario helpers;
+- `shell/tools/`: live-capture and demo-report helpers;
+- `python/lab/`: template rendering and shell-facing Python helpers;
+- `python/detector/`: detector runtime sources;
+- `python/mitm/`: attacker-side MITM automation and scenario entry points;
+- `python/logs/`: artifact interpretation helpers for detector, Zeek, and Suricata outputs;
+- `python/metrics/`: run parsing, evaluation, and summary logic;
+- `python/reporting/`: dataset export, plots, tables, and markdown report builder;
+- `python/scenarios/`: scenario metadata and ordering;
+- `python/`: package root and remaining shared utilities;
+- `docs/`: topology, architecture, experiment, metric, artifact, and command reference pages;
+- `config/`: static config inputs;
+- `libvirt/`: network definitions;
+- `results/`: per-run artifacts and generated reports.
+
+Typical per-run outputs worth keeping:
+
+- `run-meta.json`
+- `summary.txt`
+- `evaluation-summary.txt`
+- `evaluation.json`
+- `victim/detector.delta.jsonl`
+- `victim/detector-explained.txt`
+- `victim/traffic-window.txt`
+- `victim/iperf3.json`
+- `zeek/` when enabled
+- `suricata/` when enabled
+- `pcap/victim.pcap` when packet capture is enabled
+
+By default the run cleanup drops most host, gateway, attacker, and debug-only leftovers. If you want the full raw collection for troubleshooting, run with:
+
+```bash
+KEEP_DEBUG_ARTIFACTS=1 make ...
+```
+
+## Report Generation
+
+Main evaluation flow:
+
+```bash
+make experiment-plan
+make experiment-report
+```
+
+Supplementary evaluation flow:
+
+```bash
+make experiment-plan-extra
+make experiment-report-extra
+```
+
+Resume or trim a plan:
+
+```bash
+make experiment-plan ARGS="--skip 2"
+make experiment-plan ARGS="--start 11"
+make experiment-plan ARGS="--skip-scenario baseline"
+make experiment-plan-extra ARGS="--start-scenario noisy-benign-baseline"
+```
+
+Single-scenario commands with the canonical names:
+
+```bash
+make scenario-arp-poison-no-forward
+make scenario-arp-mitm-forward
+make scenario-arp-mitm-dns
+make scenario-mitigation-recovery
+```
+
+The generated markdown report now includes a detection-summary section with TP, FP, TN, FN, TPR, FPR, precision, and F1, so the main workflow does not need a separate `make evaluate` command.
+
+## Deterministic Sample Dataset Note
+
+The repository is meant to stay lightweight and reproducible, so it keeps only a small retained sample dataset rather than every measured repetition.
+
+In practice, that means the committed sample/report path is based on at most one retained measured run per scenario.
+
+Why this is intentional:
+
+- it keeps the repository size manageable;
+- it makes the sample report deterministic for readers and reviewers;
+- it avoids committing large local artifact trees that are easy to regenerate from the plan commands.
+
+For the full thesis dataset, keep your complete `results/` tree locally and rebuild reports from that local data.
+
+## What Is Committed vs Generated Locally
+
+Typically committed:
+
+- source code under `python/`, `shell/`, and `config/`;
+- docs under `docs/`;
+- a small retained sample dataset and demo-report-friendly structure.
+
+Generated locally:
+
+- `generated/` cloud-init and helper assets;
+- `storage/` VM disks and downloaded base images;
+- full `results/` trees from repeated experiments;
+- regenerated report directories such as `results/experiment-report/`, `results/experiment-report-extra/`, and `results/demo-report/`.
+
+## Day-To-Day Commands
+
+```bash
+make help
 make setup
 make start
 make status
 make baseline
 make smoke-test
-make evaluate
-make experiment-plan
-make experiment-report
-make destroy
-```
-
-Keep `SMOKE_DURATION_SECONDS` at `8` or higher. Shorter windows can miss the attack simply because the ARP poison and DNS spoof do not have enough time to become visible in the victim probes.
-
-If you created the VMs before the automation key was added, run `make rebuild` once so the experiment scripts can SSH into the guests reproducibly.
-
-## Experiment Workflow
-
-The repo now automates the safe and repeatable parts of the methodology:
-
-- `make baseline` starts the lab if needed, runs a clean traffic pass, saves packet captures plus ARP and DNS artifacts, and prints a short summary
-- `make smoke-test` runs a short baseline plus short automated ARP and ARP+DNS checks to validate the end-to-end research pipeline
-- `make record-scenario NAME=arp-mitm DURATION=60` opens a capture window for a manual scenario while the victim generates background traffic
-- `make summarize` prints a compact summary for everything under `results/`
-- `make evaluate` compares ground truth, detector alerts, Zeek alerts, and Suricata alerts for one run or a whole results tree
-- `make experiment-plan` runs the scripted diploma experiment set from `experiment_plan.md`
-- `make experiment-report` exports CSV/JSON datasets and builds comparison plots from the collected runs
-
-Key run artifacts to read first:
-
-- `summary.txt` for top-level metrics
-- `victim/detector-explained.txt` for a concise attack timeline from the detector and victim probes
-- `evaluation-summary.txt` for ground-truth attack events versus detector, Zeek, and Suricata alert counts plus time to detection
-- `evaluation.json` for machine-readable evaluation inputs
-- `pcap/*.tshark-summary.txt` for quick packet-level comparisons
-- `zeek/` for the live Zeek comparator artifacts
-- `suricata/` for the live Suricata comparator artifacts
-
-Examples:
-
-```bash
-make baseline
-make smoke-test
-make record-scenario NAME=arp-mitm DURATION=90 NOTE="Manual ARP MITM run in isolated lab"
-make record-scenario NAME=arp-mitm-dns DURATION=90 NOTE="Manual ARP + DNS scenario in isolated lab"
-make experiment-plan
-make experiment-report
 make summarize
-```
-
-The attack and mitigation actions themselves are intentionally left manual inside the isolated lab, but the setup, traffic generation, capture collection, and result summaries are scripted so the runs stay reproducible.
-
-```bash
-./shell/dangerous/record-arp-mitm.sh
-./shell/dangerous/record-arp-dns.sh
-./shell/dangerous/record-mitigation.sh
-```
-
-## What Gets Configured
-
-### Gateway VM
-
-- upstream NIC on libvirt `default`
-- lab NIC on `mitm-lab`
-- static IP `10.20.20.1/24` on the lab NIC
-- IPv4 forwarding enabled
-- iptables MASQUERADE from lab to upstream
-- `dnsmasq` bound to `10.20.20.1`
-
-### Victim VM
-
-- static IP `10.20.20.10/24`
-- gateway `10.20.20.1`
-- DNS `10.20.20.1`
-- detector service logging JSON to `/var/log/mitm-lab-detector.jsonl`
-- live Zeek comparator service writing notices under `/var/log/mitm-lab-zeek/current/`
-- live Suricata comparator service writing EVE alerts under `/var/log/mitm-lab-suricata/current/`
-
-### Attacker VM
-
-- static IP `10.20.20.66/24`
-- gateway `10.20.20.1`
-- DNS `10.20.20.1`
-- base lab tooling only from the guide
-
-## Access
-
-The default guest user is configured in `lab.conf`.
-
-Console examples:
-
-```bash
-sg libvirt -c 'virsh -c qemu:///system console mitm-gateway'
-sg libvirt -c 'virsh -c qemu:///system console mitm-victim'
-sg libvirt -c 'virsh -c qemu:///system console mitm-attacker'
-```
-
-Exit a console session with:
-
-```text
-Ctrl + ]
-```
-
-## Teardown
-
-```bash
+make experiment-plan
+make experiment-plan-extra
+make experiment-report
+make experiment-report-extra
+make demo-report
 make destroy
 ```
-
-That removes the VMs, networks, libvirt storage pool, downloaded images, and the generated lab artifacts under `storage/` and `generated/`.

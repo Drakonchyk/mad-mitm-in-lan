@@ -3,6 +3,7 @@
 /storage/
 /results/
 /sources/
+/.venv/
 
 # VM and disk artifacts
 *.qcow2

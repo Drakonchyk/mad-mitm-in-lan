@@ -30,6 +30,8 @@ help:
 		'                 Run one focused arp-mitm-dns demo scenario (detector always on, comparators on by default)' \
 		'  make demo-capture HOST=sensor IFACE=mitm-sensor0 FILTER="arp or icmp or port 53 or port 67 or port 68"' \
 		'                 Open a live tcpdump capture on the mirrored switch port or on a lab VM' \
+		'  make demo-ui PORT=8765' \
+		'                 Open the localhost thesis demo dashboard with live status, logs, and scenario buttons' \
 		'  make demo-report' \
 		'                 Build a small deterministic report from the latest retained run per scenario' \
 		'  make scenario-help' \

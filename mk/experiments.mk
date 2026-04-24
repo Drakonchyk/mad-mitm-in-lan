@@ -1,4 +1,4 @@
-.PHONY: baseline smoke-test experiment-plan experiment-plan-extra demo-start demo-scenario demo-capture
+.PHONY: baseline smoke-test experiment-plan experiment-plan-extra demo-start demo-scenario demo-capture demo-ui
 
 baseline:
 	./shell/experiments/run-baseline.sh
@@ -20,3 +20,6 @@ demo-scenario:
 
 demo-capture:
 	./shell/tools/open-live-capture.sh "$(or $(HOST),victim)" "$(or $(IFACE),)" "$(or $(FILTER),arp or icmp or port 53)"
+
+demo-ui:
+	HOST="$(or $(HOST),127.0.0.1)" PORT="$(or $(PORT),8765)" ./shell/demo/run-ui.sh

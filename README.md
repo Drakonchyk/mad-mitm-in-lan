@@ -141,6 +141,7 @@ The repo has one compact demo path that mirrors the retained sample dataset:
 ```bash
 make demo-start
 make demo-scenario
+make demo-ui
 make demo-report
 make demo-capture HOST=sensor IFACE=mitm-sensor0 FILTER="arp or icmp or port 53 or port 67 or port 68"
 ```
@@ -149,8 +150,15 @@ What these do:
 
 - `make demo-start`: provisions the lab if needed and ensures it is running;
 - `make demo-scenario`: runs the focused `arp-mitm-dns` scenario used as the canonical live demo path;
+- `make demo-ui`: starts a localhost control-room style dashboard on `http://127.0.0.1:8765/` with live detector/Zeek/Suricata status, recent events, scenario buttons, and a Wireshark launcher;
 - `make demo-report`: builds a small deterministic report from at most one retained measured run per scenario into `results/demo-report/`;
 - `make demo-capture`: opens a live `tcpdump` stream on a chosen VM or on the mirrored switch sensor port until `Ctrl-C`.
+
+The dashboard itself now starts under sudo so the browser controls can launch lab actions reliably:
+
+```bash
+make demo-ui
+```
 
 ## Dangerous Operations Warning
 

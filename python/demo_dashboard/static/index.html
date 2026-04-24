@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MITM Lab Demo Dashboard</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">MAD MITM Thesis Demo</p>
+          <h1>Live Lab Control Room</h1>
+          <p class="hero-copy">
+            Launch scenarios, watch detector health, and tail Zeek, Suricata, and detector events from one localhost page.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button class="secondary" data-action="start_lab">Ensure Lab Up</button>
+          <button class="secondary" data-action="start_monitoring">Ensure Monitoring</button>
+          <button class="secondary" data-action="stop_monitoring">Stop Monitoring</button>
+          <button class="secondary" data-action="open_wireshark">Open Wireshark</button>
+        </div>
+      </header>
+
+      <section class="panel control-panel">
+        <div class="control-copy">
+          <h2>Scenario Launcher</h2>
+          <p>Pick a duration between 5 and 60 seconds, then fire one scenario. The dashboard runs one job at a time to keep the demo predictable.</p>
+        </div>
+        <div class="duration-box">
+          <label for="durationRange">Duration</label>
+          <div class="duration-row">
+            <input id="durationRange" type="range" min="5" max="60" value="20">
+            <input id="durationNumber" type="number" min="5" max="60" value="20">
+          </div>
+        </div>
+        <div id="scenarioButtons" class="scenario-grid"></div>
+      </section>
+
+      <section class="status-grid">
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Lab Health</h2>
+            <span id="labGeneratedAt" class="muted"></span>
+          </div>
+          <div id="labStatus" class="stack compact"></div>
+        </article>
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Demo Action State</h2>
+          </div>
+          <div id="jobStatus" class="stack compact"></div>
+        </article>
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Last Completed Run</h2>
+          </div>
+          <div id="latestResult" class="stack compact"></div>
+        </article>
+      </section>
+
+      <section class="status-grid tool-grid">
+        <article class="panel tool-card" id="groundTruthCard"></article>
+        <article class="panel tool-card" id="detectorCard"></article>
+        <article class="panel tool-card" id="zeekCard"></article>
+        <article class="panel tool-card" id="suricataCard"></article>
+      </section>
+
+      <section class="logs-grid">
+        <details class="panel collapsible-panel">
+          <summary>
+            <span>Detector Events</span>
+            <span class="muted" id="detectorLogPath"></span>
+          </summary>
+          <div id="detectorLog" class="log-stream"></div>
+        </details>
+        <details class="panel collapsible-panel">
+          <summary>
+            <span>Zeek Notices</span>
+            <span class="muted" id="zeekLogPath"></span>
+          </summary>
+          <div id="zeekLog" class="log-stream"></div>
+        </details>
+        <details class="panel collapsible-panel">
+          <summary>
+            <span>Suricata Events</span>
+            <span class="muted" id="suricataLogPath"></span>
+          </summary>
+          <div id="suricataLog" class="log-stream"></div>
+        </details>
+      </section>
+
+      <details class="panel runner-panel collapsible-panel">
+        <summary>
+          <span>Runner Log</span>
+          <span class="muted" id="runnerLogPath"></span>
+        </summary>
+        <pre id="runnerLog" class="runner-log"></pre>
+      </details>
+
+      <section class="panel footer-panel">
+        <div id="messageBar" class="message muted">Start the dashboard with <code>make demo-ui</code>, then use the browser controls for the live demo.</div>
+      </section>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

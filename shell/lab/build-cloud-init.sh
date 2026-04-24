@@ -109,7 +109,7 @@ $(indent_file "${SERVICE_SOURCE_DIR}/mitm-lab-gateway.service")
     permissions: '0644'
     owner: root:root
     content: |
-$(indent_rendered_template "${CONFIG_SOURCE_DIR}/dnsmasq-mitm-lab.conf" GATEWAY_IP "${GATEWAY_IP}" UPSTREAM_DNS1 "${UPSTREAM_DNS1}" UPSTREAM_DNS2 "${UPSTREAM_DNS2}")
+$(indent_rendered_template "${CONFIG_SOURCE_DIR}/dnsmasq-mitm-lab.conf" GATEWAY_IP "${GATEWAY_IP}" UPSTREAM_DNS1 "${UPSTREAM_DNS1}" UPSTREAM_DNS2 "${UPSTREAM_DNS2}" LAB_DHCP_RANGE_START "${LAB_DHCP_RANGE_START}" LAB_DHCP_RANGE_END "${LAB_DHCP_RANGE_END}")
   - path: /etc/sysctl.d/99-mitm-lab.conf
     permissions: '0644'
     owner: root:root
@@ -133,15 +133,7 @@ ethernets:
     match:
       macaddress: "${VICTIM_MAC}"
     set-name: vnic0
-    dhcp4: false
-    addresses:
-      - ${VICTIM_CIDR}
-    routes:
-      - to: default
-        via: ${GATEWAY_IP}
-    nameservers:
-      addresses:
-        - ${DNS_SERVER}
+    dhcp4: true
 EOF
 
 cat > "$(generated_dir victim)/user-data.yaml" <<EOF
@@ -178,20 +170,6 @@ chpasswd:
   list: |
     ${LAB_USER}:${LAB_PASSWORD}
   expire: false
-write_files:
-  - path: /usr/local/bin/mitm_lab_detector.py
-    permissions: '0755'
-    owner: root:root
-    content: |
-$(indent_rendered_template "${PYTHON_SOURCE_DIR}/detector/live.py" GATEWAY_IP "${GATEWAY_IP}" DNS_SERVER "${DNS_SERVER}" ATTACKER_IP "$(cidr_addr "${ATTACKER_CIDR}")" VICTIM_IP "$(cidr_addr "${VICTIM_CIDR}")" PYTHON_DOMAIN_LIST "${PYTHON_DOMAIN_LIST}")
-  - path: /etc/systemd/system/mitm-lab-detector.service
-    permissions: '0644'
-    owner: root:root
-    content: |
-$(indent_file "${SERVICE_SOURCE_DIR}/mitm-lab-detector.service")
-runcmd:
-  - [systemctl, daemon-reload]
-  - [systemctl, enable, --now, mitm-lab-detector.service]
 EOF
 
 cat > "$(generated_dir attacker)/meta-data.yaml" <<EOF
@@ -206,15 +184,7 @@ ethernets:
     match:
       macaddress: "${ATTACKER_MAC}"
     set-name: vnic0
-    dhcp4: false
-    addresses:
-      - ${ATTACKER_CIDR}
-    routes:
-      - to: default
-        via: ${GATEWAY_IP}
-    nameservers:
-      addresses:
-        - ${DNS_SERVER}
+    dhcp4: true
 EOF
 
 cat > "$(generated_dir attacker)/user-data.yaml" <<EOF

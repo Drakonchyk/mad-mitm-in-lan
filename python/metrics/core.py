@@ -29,21 +29,85 @@ from metrics.parsers import (
     normalize_ground_truth_event,
     normalize_timestamp,
     observed_wire_attack_records,
+    observed_wire_attack_epochs_by_type,
+    observed_wire_pcap_path,
+    observed_wire_source_label,
     observed_wire_attack_type_first_seen_at,
     observed_wire_attack_start_candidates,
+    observed_wire_capture_duration_seconds,
+    observed_wire_control_plane_packet_counts,
+    observed_wire_dns_query_count,
+    parse_timestamp,
     parse_concatenated_json,
     supported_attack_started_at,
 )
+from metrics.run_artifacts import detector_delta_path
+from metrics.run_artifacts import suricata_eve_path, zeek_notice_path
 from metrics.primitives import time_to_detection_seconds
+
+
+def last_timestamp(values: list[str | None]) -> str | None:
+    normalized = [value for value in values if value]
+    return next(
+        (
+            value
+            for value in sorted(
+                normalized,
+                key=lambda candidate: parse_timestamp(candidate) or parse_timestamp("9999-12-31T23:59:59+00:00"),
+                reverse=True,
+            )
+        ),
+        None,
+    )
+
+
+def seconds_between_timestamps(started_at: str | None, ended_at: str | None) -> float | None:
+    started = parse_timestamp(started_at)
+    ended = parse_timestamp(ended_at)
+    if started is None or ended is None:
+        return None
+    return max((ended - started).total_seconds(), 0.0)
+
+
+def attack_type_durations_seconds(epochs_by_type: dict[str, list[str]]) -> dict[str, float | None]:
+    durations: dict[str, float | None] = {}
+    for attack_type in ("arp_spoof", "icmp_redirect", "dns_spoof", "dhcp_spoof"):
+        epochs = epochs_by_type.get(attack_type, [])
+        if not epochs:
+            continue
+        try:
+            start = float(epochs[0])
+            end = float(epochs[-1])
+        except (TypeError, ValueError):
+            durations[attack_type] = None
+            continue
+        durations[attack_type] = max(end - start, 0.0)
+    return dict(sorted(durations.items()))
+
+
+def attack_type_packet_rates_pps(
+    counts: dict[str, int],
+    durations: dict[str, float | None],
+) -> dict[str, float | None]:
+    rates: dict[str, float | None] = {}
+    for attack_type, count in counts.items():
+        duration = durations.get(attack_type)
+        if duration is None or duration <= 0:
+            rates[attack_type] = None
+            continue
+        rates[attack_type] = count / duration
+    return dict(sorted(rates.items()))
 
 
 def evaluation_input_paths(run_dir: Path) -> list[Path]:
     paths = [
         run_dir / "run-meta.json",
-        run_dir / "victim" / "detector.delta.jsonl",
+        detector_delta_path(run_dir),
+        run_dir / "pcap" / "sensor.pcap",
         run_dir / "pcap" / "victim.pcap",
-        run_dir / "zeek" / "victim" / "notice.log",
-        run_dir / "suricata" / "victim" / "eve.json",
+        run_dir / "pcap" / "wire-truth.json",
+        zeek_notice_path(run_dir),
+        suricata_eve_path(run_dir),
     ]
     paths.extend(find_attack_stdout_files(run_dir))
     return sorted(path for path in paths if path.exists())
@@ -90,8 +154,6 @@ def load_cached_run_evaluation(run_dir: Path) -> RunEvaluation | None:
     if not isinstance(metadata, dict):
         return None
     if metadata.get("cache_version") != EVALUATION_CACHE_VERSION:
-        return None
-    if metadata.get("dependency_mtimes_ns") != dependency_mtimes():
         return None
     if metadata.get("input_mtimes_ns") != cache_input_mtimes(run_dir):
         return None
@@ -145,7 +207,7 @@ def load_zeek_result(
     attack_started_at: str | None,
     ground_truth_first_seen_at: dict[str, str],
 ) -> SensorResult:
-    records = load_jsonl(run_dir / "zeek" / "victim" / "notice.log")
+    records = load_jsonl(zeek_notice_path(run_dir))
     canonical_alert_types, canonical_first_alert_at, raw_counter = canonical_counter_from_records(
         records,
         raw_type_key="note",
@@ -171,12 +233,13 @@ def load_zeek_result(
 
 def load_suricata_result(
     run_dir: Path,
+    meta: dict[str, Any],
     attack_started_at: str | None,
     ground_truth_first_seen_at: dict[str, str],
     coverage: dict[str, bool],
 ) -> SensorResult:
-    records = load_jsonl(run_dir / "suricata" / "victim" / "eve.json")
-    alerts = [
+    records = load_jsonl(suricata_eve_path(run_dir))
+    alerts: list[dict[str, Any]] = [
         {
             "signature": record.get("alert", {}).get("signature"),
             "timestamp": record.get("timestamp"),
@@ -184,6 +247,35 @@ def load_suricata_result(
         for record in records
         if record.get("event_type") == "alert"
     ]
+
+    attacker_mac = str(meta.get("attacker_mac", "")).lower() or None
+    gateway_ip = meta.get("gateway_lab_ip")
+    victim_ip = meta.get("victim_ip")
+    arp_eve_matches = 0
+    for record in records:
+        if record.get("event_type") != "arp":
+            continue
+        arp = record.get("arp", {})
+        opcode = str(arp.get("opcode", "")).lower()
+        src_mac = str(arp.get("src_mac", "")).lower()
+        src_ip = arp.get("src_ip")
+        dest_ip = arp.get("dest_ip")
+        if opcode not in {"reply", "response", "2"}:
+            continue
+        if attacker_mac and src_mac != attacker_mac:
+            continue
+        if gateway_ip and src_ip != gateway_ip:
+            continue
+        if victim_ip and dest_ip != victim_ip:
+            continue
+        arp_eve_matches += 1
+        alerts.append(
+            {
+                "signature": "MITM-LAB Suricata EVE ARP reply from attacker claims gateway IP to victim",
+                "timestamp": record.get("timestamp"),
+            }
+        )
+
     canonical_alert_types, canonical_first_alert_at, raw_counter = canonical_counter_from_records(
         alerts,
         raw_type_key="signature",
@@ -192,7 +284,10 @@ def load_suricata_result(
     )
     raw_counter = dict(sorted(Counter(record.get("signature", "unknown") for record in alerts if record.get("signature")).items()))
     first_alert_at = first_timestamp(normalize_timestamp(record.get("timestamp")) for record in alerts)
-    supported_started_at = supported_attack_started_at(ground_truth_first_seen_at, coverage)
+    effective_coverage = dict(coverage)
+    if arp_eve_matches > 0:
+        effective_coverage["arp_spoof"] = True
+    supported_started_at = supported_attack_started_at(ground_truth_first_seen_at, effective_coverage)
     return SensorResult(
         alert_events=len(alerts),
         alert_types=raw_counter,
@@ -203,13 +298,13 @@ def load_suricata_result(
         ttd_seconds=time_to_detection_seconds(attack_started_at, first_alert_at),
         supported_attack_started_at=supported_started_at,
         supported_ttd_seconds=time_to_detection_seconds(supported_started_at, first_alert_at),
-        coverage=coverage,
+        coverage=effective_coverage,
     )
 
 
 def evaluate_single_run(run_dir: Path) -> RunEvaluation:
     meta = load_json(run_dir / "run-meta.json")
-    detector_records = load_jsonl(run_dir / "victim" / "detector.delta.jsonl")
+    detector_records = load_jsonl(detector_delta_path(run_dir))
 
     attack_records: list[dict[str, Any]] = []
     for path in find_attack_stdout_files(run_dir):
@@ -220,7 +315,7 @@ def evaluate_single_run(run_dir: Path) -> RunEvaluation:
         if record.get("event") in GROUND_TRUTH_ATTACK_EVENTS
     ]
     observed_records = observed_wire_attack_records(run_dir, meta)
-    relevant_attack_records = [*attacker_action_records, *observed_records]
+    relevant_attack_records = observed_records if observed_records else attacker_action_records
     control_records = [
         record for record in attack_records
         if record.get("event") not in GROUND_TRUTH_ATTACK_EVENTS
@@ -230,18 +325,34 @@ def evaluate_single_run(run_dir: Path) -> RunEvaluation:
     attacker_action_counter, _ = canonical_ground_truth_counts(attacker_action_records)
     observed_counter, _ = canonical_ground_truth_counts(observed_records)
     control_counter = Counter(record.get("event", "unknown") for record in control_records)
+    wire_epochs_by_type = observed_wire_attack_epochs_by_type(run_dir, meta, attack_records)
     wire_attack_first_seen_at = observed_wire_attack_type_first_seen_at(run_dir, meta, attack_records)
     attack_first_seen_at = merge_first_seen_maps(attack_first_seen_at, wire_attack_first_seen_at)
     attack_start_candidates = [record.get("ts") for record in relevant_attack_records if record.get("ts")]
     attack_start_candidates.extend(observed_wire_attack_start_candidates(run_dir, meta, attack_records))
     attack_started_at = first_timestamp(attack_start_candidates)
+    attack_ended_at = last_timestamp([record.get("ts") for record in relevant_attack_records if record.get("ts")])
+    attack_duration_seconds = seconds_between_timestamps(attack_started_at, attack_ended_at)
+    attack_type_durations = attack_type_durations_seconds(wire_epochs_by_type)
+    attack_type_rates = attack_type_packet_rates_pps(attack_counter, attack_type_durations)
+    dns_query_count = observed_wire_dns_query_count(run_dir, meta)
+    dns_spoof_success_ratio = (
+        attack_counter.get("dns_spoof", 0) / dns_query_count
+        if dns_query_count > 0 and attack_counter.get("dns_spoof", 0) > 0
+        else None
+    )
+    arp_direction_counts = {
+        "gateway_to_victim": len(wire_epochs_by_type.get("arp_spoof_gateway_to_victim", [])),
+        "victim_to_gateway": len(wire_epochs_by_type.get("arp_spoof_victim_to_gateway", [])),
+    }
+    control_plane_counts = observed_wire_control_plane_packet_counts(run_dir)
+    capture_duration_seconds = observed_wire_capture_duration_seconds(run_dir)
+    wire_truth_label = observed_wire_source_label(run_dir)
 
-    if attack_records and observed_records:
-        ground_truth_source = "attacker_stdout+victim_pcap"
+    if observed_records:
+        ground_truth_source = wire_truth_label or "switch_pcap"
     elif attack_records:
         ground_truth_source = "attacker_stdout"
-    elif observed_records:
-        ground_truth_source = "victim_pcap"
     elif meta.get("scenario") == "baseline":
         ground_truth_source = "baseline_inferred"
     else:
@@ -252,7 +363,7 @@ def evaluate_single_run(run_dir: Path) -> RunEvaluation:
     zeek_result = load_zeek_result(run_dir, attack_started_at, attack_first_seen_at)
     suricata_coverage = dict(SENSOR_COVERAGE["suricata"])
     suricata_coverage["arp_spoof"] = bool(meta.get("suricata_arp_rule_enabled", False))
-    suricata_result = load_suricata_result(run_dir, attack_started_at, attack_first_seen_at, suricata_coverage)
+    suricata_result = load_suricata_result(run_dir, meta, attack_started_at, attack_first_seen_at, suricata_coverage)
 
     return RunEvaluation(
         run_id=meta.get("run_id", run_dir.name),
@@ -265,11 +376,20 @@ def evaluate_single_run(run_dir: Path) -> RunEvaluation:
         ground_truth_observed_wire_events=len(observed_records),
         ground_truth_control_events=len(control_records),
         ground_truth_attack_started_at=attack_started_at,
+        ground_truth_attack_ended_at=attack_ended_at,
+        ground_truth_capture_duration_seconds=capture_duration_seconds,
+        ground_truth_attack_duration_seconds=attack_duration_seconds,
         ground_truth_attack_types=attack_counter,
         ground_truth_attack_type_first_seen_at=attack_first_seen_at,
+        ground_truth_attack_type_durations_seconds=attack_type_durations,
+        ground_truth_attack_type_packet_rates_pps=attack_type_rates,
         ground_truth_attacker_action_types=attacker_action_counter,
         ground_truth_observed_wire_types=observed_counter,
         ground_truth_control_types=dict(sorted(control_counter.items())),
+        ground_truth_dns_query_count=dns_query_count,
+        ground_truth_dns_spoof_success_ratio=dns_spoof_success_ratio,
+        ground_truth_arp_spoof_direction_counts=arp_direction_counts,
+        ground_truth_control_plane_packet_counts=dict(sorted(control_plane_counts.items())),
         detector_alert_events=detector_result.alert_events,
         detector_alert_types=detector_result.alert_types,
         detector_unique_alert_type_count=detector_result.unique_alert_type_count,

@@ -11,6 +11,8 @@ from typing import Any, Iterable
 from lab.config import load_lab_config
 from metrics.model import GROUND_TRUTH_ATTACK_EVENTS
 
+WIRE_TRUTH_SUMMARY_NAME = "wire-truth.json"
+
 
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -101,6 +103,33 @@ def run_tshark_fields(pcap_path: Path, display_filter: str, field: str) -> list[
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
+def run_tshark_rows(pcap_path: Path, display_filter: str, fields: list[str]) -> list[list[str]]:
+    if not pcap_path.exists() or shutil.which("tshark") is None:
+        return []
+
+    command = [
+        "tshark",
+        "-r",
+        str(pcap_path),
+        "-Y",
+        display_filter,
+        "-T",
+        "fields",
+    ]
+    for field in fields:
+        command.extend(["-e", field])
+    command.extend(["-E", "separator=\t"])
+    result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return []
+    return [line.split("\t") for line in result.stdout.splitlines() if line.strip()]
+
+
 def attacker_mac_for_run(meta: dict[str, Any], attack_records: list[dict[str, Any]]) -> str | None:
     for record in attack_records:
         attacker_mac = record.get("attacker_mac")
@@ -117,26 +146,228 @@ def attacker_mac_for_run(meta: dict[str, Any], attack_records: list[dict[str, An
         return None
 
 
-def observed_wire_attack_records(run_dir: Path, meta: dict[str, Any]) -> list[dict[str, Any]]:
-    pcap_path = run_dir / "pcap" / "victim.pcap"
+def normalize_domain_name(value: str | None) -> str | None:
+    if not value:
+        return None
+    return value.rstrip(".").lower()
+
+
+def monitored_domains_for_run(meta: dict[str, Any]) -> set[str]:
+    domains: set[str] = set()
+    spoofed_domains = meta.get("spoofed_domains")
+    if isinstance(spoofed_domains, list):
+        domains.update(filter(None, (normalize_domain_name(str(item)) for item in spoofed_domains)))
+    raw_domains = meta.get("domains")
+    if isinstance(raw_domains, str):
+        domains.update(filter(None, (normalize_domain_name(item) for item in raw_domains.split())))
+    return domains
+
+
+def observed_wire_pcap_path(run_dir: Path) -> Path | None:
+    preferred = [
+        run_dir / "pcap" / "sensor.pcap",
+        run_dir / "pcap" / "victim.pcap",
+    ]
+    for path in preferred:
+        if path.exists():
+            return path
+    return None
+
+
+def wire_truth_summary_path(run_dir: Path) -> Path:
+    return run_dir / "pcap" / WIRE_TRUTH_SUMMARY_NAME
+
+
+def load_wire_truth_summary(run_dir: Path) -> dict[str, Any]:
+    path = wire_truth_summary_path(run_dir)
+    if not path.exists():
+        return {}
+    try:
+        payload = load_json(path)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def observed_wire_source_label(run_dir: Path) -> str | None:
+    pcap_path = observed_wire_pcap_path(run_dir)
+    if pcap_path is not None:
+        return "switch_pcap" if pcap_path.name == "sensor.pcap" else "victim_pcap"
+
+    summary = load_wire_truth_summary(run_dir)
+    source = summary.get("ground_truth_source")
+    if isinstance(source, str) and source in {"switch_pcap", "victim_pcap"}:
+        return source
+    return None
+
+
+def observed_wire_attack_epochs_by_type(
+    run_dir: Path,
+    meta: dict[str, Any],
+    attack_records: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    pcap_path = observed_wire_pcap_path(run_dir)
     victim_ip = meta.get("victim_ip")
     attacker_ip = meta.get("attacker_ip")
-    if not victim_ip or not attacker_ip:
+    gateway_ip = meta.get("gateway_lab_ip")
+    gateway_mac = str(meta.get("gateway_lab_mac", "")).lower() or None
+    attacker_mac = attacker_mac_for_run(meta, attack_records)
+    if pcap_path is None:
+        summary = load_wire_truth_summary(run_dir)
+        values = summary.get("attack_epochs_by_type", {})
+        if not isinstance(values, dict):
+            return {}
+        normalized: dict[str, list[str]] = {}
+        for attack_type, epochs in values.items():
+            if not isinstance(attack_type, str) or not isinstance(epochs, list):
+                continue
+            normalized[attack_type] = [str(epoch) for epoch in epochs if str(epoch)]
+        return dict(sorted(normalized.items()))
+
+    epochs: dict[str, list[str]] = {}
+    if attacker_mac and gateway_ip and victim_ip:
+        gateway_to_victim = run_tshark_fields(
+            pcap_path,
+            f"arp.opcode==2 && eth.src=={attacker_mac} && "
+            f"arp.src.proto_ipv4=={gateway_ip} && arp.dst.proto_ipv4=={victim_ip}",
+            "frame.time_epoch",
+        )
+        victim_to_gateway = run_tshark_fields(
+            pcap_path,
+            f"arp.opcode==2 && eth.src=={attacker_mac} && "
+            f"arp.src.proto_ipv4=={victim_ip} && arp.dst.proto_ipv4=={gateway_ip}",
+            "frame.time_epoch",
+        )
+        epochs["arp_spoof"] = sorted([*gateway_to_victim, *victim_to_gateway], key=float)
+        epochs["arp_spoof_gateway_to_victim"] = gateway_to_victim
+        epochs["arp_spoof_victim_to_gateway"] = victim_to_gateway
+    if victim_ip and attacker_ip and gateway_ip:
+        epochs["dns_spoof"] = run_tshark_fields(
+            pcap_path,
+            f"ip.src=={gateway_ip} && ip.dst=={victim_ip} && "
+            f"dns.flags.response==1 && dns.a=={attacker_ip}",
+            "frame.time_epoch",
+        )
+    if victim_ip and attacker_ip:
+        epochs["icmp_redirect"] = run_tshark_fields(
+            pcap_path,
+            f"icmp.type==5 && ip.src=={attacker_ip} && ip.dst=={victim_ip}",
+            "frame.time_epoch",
+        )
+    if gateway_mac:
+        epochs["dhcp_spoof"] = run_tshark_fields(
+            pcap_path,
+            f"bootp && udp.srcport==67 && udp.dstport==68 && eth.src!={gateway_mac}",
+            "frame.time_epoch",
+        )
+    return epochs
+
+
+def observed_wire_dns_query_rows(run_dir: Path, meta: dict[str, Any]) -> list[list[str]]:
+    pcap_path = observed_wire_pcap_path(run_dir)
+    victim_ip = meta.get("victim_ip")
+    dns_server = meta.get("gateway_lab_ip")
+    domains = monitored_domains_for_run(meta)
+    if pcap_path is None or not victim_ip or not dns_server or not domains:
         return []
 
-    icmp_epochs = run_tshark_fields(
+    rows = run_tshark_rows(
         pcap_path,
-        f"icmp.type==5 && ip.src=={attacker_ip} && ip.dst=={victim_ip}",
-        "frame.time_epoch",
+        f"ip.src=={victim_ip} && ip.dst=={dns_server} && dns.flags.response==0",
+        ["frame.time_epoch", "dns.qry.name"],
     )
+    filtered: list[list[str]] = []
+    for row in rows:
+        if len(row) < 2:
+            continue
+        qname = normalize_domain_name(row[1])
+        if qname in domains:
+            filtered.append(row)
+    return filtered
+
+
+def observed_wire_dns_query_count(run_dir: Path, meta: dict[str, Any]) -> int:
+    pcap_path = observed_wire_pcap_path(run_dir)
+    if pcap_path is None:
+        summary = load_wire_truth_summary(run_dir)
+        value = summary.get("dns_query_count")
+        if isinstance(value, int):
+            return value
+        return 0
+    return len(observed_wire_dns_query_rows(run_dir, meta))
+
+
+def observed_wire_control_plane_packet_counts(run_dir: Path) -> dict[str, int]:
+    pcap_path = observed_wire_pcap_path(run_dir)
+    if pcap_path is None:
+        summary = load_wire_truth_summary(run_dir)
+        counts = summary.get("control_plane_packet_counts", {})
+        if not isinstance(counts, dict):
+            return {}
+        normalized: dict[str, int] = {}
+        for key, value in counts.items():
+            if not isinstance(key, str):
+                continue
+            try:
+                normalized[key] = int(value)
+            except (TypeError, ValueError):
+                continue
+        return dict(sorted(normalized.items()))
+
+    return {
+        "arp": len(run_tshark_fields(pcap_path, "arp", "frame.number")),
+        "dhcp": len(run_tshark_fields(pcap_path, "bootp || dhcp", "frame.number")),
+        "dns": len(run_tshark_fields(pcap_path, "dns", "frame.number")),
+        "broadcast_l2": len(run_tshark_fields(pcap_path, "eth.dst==ff:ff:ff:ff:ff:ff", "frame.number")),
+    }
+
+
+def observed_wire_capture_duration_seconds(run_dir: Path) -> float | None:
+    pcap_path = observed_wire_pcap_path(run_dir)
+    if pcap_path is None:
+        summary = load_wire_truth_summary(run_dir)
+        value = summary.get("capture_duration_seconds")
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+    epochs = run_tshark_fields(pcap_path, "frame", "frame.time_epoch")
+    if len(epochs) < 2:
+        return None
+    try:
+        return max(float(epochs[-1]) - float(epochs[0]), 0.0)
+    except ValueError:
+        return None
+
+
+def observed_wire_attack_records(run_dir: Path, meta: dict[str, Any]) -> list[dict[str, Any]]:
+    epochs_by_type = observed_wire_attack_epochs_by_type(run_dir, meta, [])
 
     records: list[dict[str, Any]] = []
-    for value in icmp_epochs:
+    for value in epochs_by_type.get("arp_spoof", []):
+        try:
+            ts = datetime.fromtimestamp(float(value), timezone.utc).isoformat()
+        except ValueError:
+            continue
+        records.append({"event": "arp_spoof_observed", "ts": ts})
+    for value in epochs_by_type.get("dns_spoof", []):
+        try:
+            ts = datetime.fromtimestamp(float(value), timezone.utc).isoformat()
+        except ValueError:
+            continue
+        records.append({"event": "dns_spoof_observed", "ts": ts})
+    for value in epochs_by_type.get("icmp_redirect", []):
         try:
             ts = datetime.fromtimestamp(float(value), timezone.utc).isoformat()
         except ValueError:
             continue
         records.append({"event": "icmp_redirect_observed", "ts": ts})
+    for value in epochs_by_type.get("dhcp_spoof", []):
+        try:
+            ts = datetime.fromtimestamp(float(value), timezone.utc).isoformat()
+        except ValueError:
+            continue
+        records.append({"event": "rogue_dhcp_server_observed", "ts": ts})
     return records
 
 
@@ -145,31 +376,10 @@ def observed_wire_attack_type_first_seen_at(
     meta: dict[str, Any],
     attack_records: list[dict[str, Any]],
 ) -> dict[str, str]:
-    pcap_path = run_dir / "pcap" / "victim.pcap"
-    victim_ip = meta.get("victim_ip")
-    attacker_ip = meta.get("attacker_ip")
-    gateway_ip = meta.get("gateway_lab_ip")
-    attacker_mac = attacker_mac_for_run(meta, attack_records)
-    if not pcap_path.exists():
-        return {}
-
-    filters: dict[str, str] = {}
-    if attacker_mac and gateway_ip and victim_ip:
-        filters["arp_spoof"] = (
-            f"arp.opcode==2 && eth.src=={attacker_mac} && "
-            f"arp.src.proto_ipv4=={gateway_ip} && arp.dst.proto_ipv4=={victim_ip}"
-        )
-    if attacker_ip and victim_ip:
-        filters["icmp_redirect"] = f"icmp.type==5 && ip.src=={attacker_ip} && ip.dst=={victim_ip}"
-    if attacker_ip and victim_ip and gateway_ip:
-        filters["dns_spoof"] = (
-            f"ip.src=={gateway_ip} && ip.dst=={victim_ip} && "
-            f"dns.flags.response==1 && dns.a=={attacker_ip}"
-        )
-
     first_seen_at: dict[str, str] = {}
-    for attack_type, display_filter in filters.items():
-        epochs = run_tshark_fields(pcap_path, display_filter, "frame.time_epoch")
+    for attack_type, epochs in observed_wire_attack_epochs_by_type(run_dir, meta, attack_records).items():
+        if attack_type.startswith("arp_spoof_"):
+            continue
         if not epochs:
             continue
         try:
@@ -185,6 +395,26 @@ def observed_wire_attack_start_candidates(
     attack_records: list[dict[str, Any]],
 ) -> list[str]:
     return list(observed_wire_attack_type_first_seen_at(run_dir, meta, attack_records).values())
+
+
+def build_wire_truth_summary(
+    run_dir: Path,
+    meta: dict[str, Any],
+    attack_records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    source = observed_wire_source_label(run_dir)
+    if source is None:
+        return {}
+
+    epochs_by_type = observed_wire_attack_epochs_by_type(run_dir, meta, attack_records)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "ground_truth_source": source,
+        "capture_duration_seconds": observed_wire_capture_duration_seconds(run_dir),
+        "attack_epochs_by_type": epochs_by_type,
+        "dns_query_count": observed_wire_dns_query_count(run_dir, meta),
+        "control_plane_packet_counts": observed_wire_control_plane_packet_counts(run_dir),
+    }
 
 
 def normalize_ground_truth_event(payload: dict[str, Any]) -> dict[str, Any]:

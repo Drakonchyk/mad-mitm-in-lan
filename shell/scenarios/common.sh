@@ -11,31 +11,12 @@ scenario_info() {
   printf '[scenario] %s\n' "$*"
 }
 
-require_sudo_refresh() {
-  scenario_info "Refreshing sudo credentials before continuing"
-  sudo -k
-  sudo -v
-}
-
-confirm_scenario_run() {
-  local scenario="$1"
-
-  printf '\n'
-  warn "This wrapper is only for the isolated ${LAB_NAME} lab."
-  warn "Do not continue unless you intend to run this scenario only inside these VMs."
-  read -r -p "Type ${scenario} to continue: " answer
-  [[ "${answer}" == "${scenario}" ]] || {
-    warn "Scenario aborted"
-    exit 1
-  }
-}
-
 verify_isolated_lab() {
   local expected_gateway expected_victim expected_attacker net_output vm_output
 
   expected_gateway="$(gateway_upstream_ip)"
-  expected_victim="$(cidr_addr "${VICTIM_CIDR}")"
-  expected_attacker="$(cidr_addr "${ATTACKER_CIDR}")"
+  expected_victim="$(lab_host_ip victim 2>/dev/null || printf 'pending-dhcp-lease')"
+  expected_attacker="$(lab_host_ip attacker 2>/dev/null || printf 'pending-dhcp-lease')"
 
   net_output="$(run_hypervisor virsh -c "${LIBVIRT_URI}" net-list --all)"
   vm_output="$(run_hypervisor virsh -c "${LIBVIRT_URI}" list --all)"
@@ -44,10 +25,10 @@ verify_isolated_lab() {
     warn "default network is missing"
     exit 1
   }
-  [[ "${net_output}" == *" ${LAB_NAME} "* ]] || {
-    warn "${LAB_NAME} network is missing"
+  if ! run_root ovs-vsctl br-exists "${LAB_SWITCH_BRIDGE}" >/dev/null 2>&1; then
+    warn "Open vSwitch bridge ${LAB_SWITCH_BRIDGE} is missing"
     exit 1
-  }
+  fi
   [[ "${vm_output}" == *"${GATEWAY_NAME}"* ]] || {
     warn "${GATEWAY_NAME} VM is missing"
     exit 1
@@ -74,10 +55,8 @@ run_automated_scenario_recording() {
   local attack_label="$4"
   local attack_cmd="$5"
 
-  verify_isolated_lab
-  require_sudo_refresh
-  confirm_scenario_run "${scenario_name}"
   start_lab_and_wait_for_access
+  verify_isolated_lab
   prepare_attacker_research_workspace
 
   scenario_info "Automated attacker command: ${attack_cmd}"
@@ -85,5 +64,6 @@ run_automated_scenario_recording() {
   ATTACK_JOB_HOST="attacker" \
   ATTACK_JOB_LABEL="${attack_label}" \
   ATTACK_JOB_CMD="${attack_cmd}" \
+  ATTACK_JOB_USE_SUDO="1" \
     "${REPO_ROOT}/shell/experiments/run-scenario-window.sh" "${scenario_name}" "${duration}" "${note}"
 }

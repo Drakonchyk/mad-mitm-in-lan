@@ -8,7 +8,13 @@ EXPERIMENT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 WARMUP_RUNS="${WARMUP_RUNS:-1}"
 MEASURED_RUNS="${MEASURED_RUNS:-5}"
-SUPPLEMENTARY_SCENARIOS="${SUPPLEMENTARY_SCENARIOS:-intermittent-arp-mitm-dns noisy-benign-baseline reduced-observability}"
+SUPPLEMENTARY_SCENARIOS="${SUPPLEMENTARY_SCENARIOS:-intermittent-arp-mitm-dns intermittent-dhcp-spoof dhcp-offer-only noisy-benign-baseline reduced-observability}"
+PCAP_RETENTION_POLICY="${PCAP_RETENTION_POLICY:-none}"
+PCAP_ENABLE="${PCAP_ENABLE:-1}"
+GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE:-0}"
+PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE:-0}"
+IPERF_ENABLE="${IPERF_ENABLE:-0}"
+POST_ATTACK_SETTLE_SECONDS="${POST_ATTACK_SETTLE_SECONDS:-0}"
 REMOTE_ROOT="$(research_workspace_root)"
 PLAN_SKIP_RUNS=0
 PLAN_START_RUN=1
@@ -91,9 +97,11 @@ run_window() {
   ATTACK_JOB_HOST="${ATTACK_JOB_HOST_OVERRIDE:-attacker}" \
   ATTACK_JOB_LABEL="${scenario}" \
   ATTACK_JOB_CMD="${attack_cmd}" \
+  ATTACK_JOB_USE_SUDO="1" \
   AUX_JOB_HOST="${AUX_JOB_HOST_OVERRIDE:-victim}" \
   AUX_JOB_LABEL="${scenario}-aux" \
   AUX_JOB_CMD="${aux_cmd}" \
+  AUX_JOB_USE_SUDO="$([[ -n "${aux_cmd}" ]] && printf '1' || printf '0')" \
   PLAN_RUN_INDEX="${run_index}" \
   PLAN_WARMUP="${warmup}" \
   PLAN_DURATION_SECONDS="${duration}" \
@@ -104,6 +112,11 @@ run_window() {
   PLAN_DNS_SPOOF_ENABLED="${dns_spoof_enabled}" \
   PLAN_SPOOFED_DOMAINS="${spoofed_domains}" \
   DETECTOR_PACKET_SAMPLE_RATE="${packet_sample_rate}" \
+  PCAP_ENABLE="${PCAP_ENABLE}" \
+  GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE}" \
+  PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE}" \
+  IPERF_ENABLE="${IPERF_ENABLE}" \
+  POST_ATTACK_SETTLE_SECONDS="${POST_ATTACK_SETTLE_SECONDS}" \
     "${EXPERIMENT_SCRIPT_DIR}/run-scenario-window.sh" "${scenario}" "${duration}" "${note}"
 }
 
@@ -126,7 +139,41 @@ run_scenario() {
         "1" \
         "1" \
         "iana.org" \
-        "sleep 10; cd '${REMOTE_ROOT}' && for pulse in 1 2 3 4; do timeout -s INT 5 sudo env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --enable-forwarding --domains iana.org || true; if [[ \"\$pulse\" -lt 4 ]]; then sleep 10; fi; done" \
+        "sleep 10; cd '${REMOTE_ROOT}' && for pulse in 1 2 3 4; do timeout -s INT 5 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --enable-forwarding --domains iana.org || true; if [[ \"\$pulse\" -lt 4 ]]; then sleep 10; fi; done" \
+        "" \
+        "1"
+      ;;
+    intermittent-dhcp-spoof)
+      run_window \
+        "intermittent-dhcp-spoof" \
+        "90" \
+        "Supplementary pulsed rogue DHCP spoofing to test short attack windows" \
+        "${run_index}" \
+        "${warmup}" \
+        "10" \
+        "60" \
+        "" \
+        "0" \
+        "0" \
+        "" \
+        "sleep 10; cd '${REMOTE_ROOT}' && for pulse in 1 2 3 4; do timeout -s INT 5 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf dhcp-spoof --interface vnic0 --interval 1.0 || true; if [[ \"\$pulse\" -lt 4 ]]; then sleep 10; fi; done" \
+        "" \
+        "1"
+      ;;
+    dhcp-offer-only)
+      run_window \
+        "dhcp-offer-only" \
+        "60" \
+        "Supplementary rogue DHCP offers without ACK to test early-stage server detection" \
+        "${run_index}" \
+        "${warmup}" \
+        "10" \
+        "50" \
+        "" \
+        "0" \
+        "0" \
+        "" \
+        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 40 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf dhcp-spoof --interface vnic0 --interval 2.0 --no-ack" \
         "" \
         "1"
       ;;
@@ -160,7 +207,7 @@ run_scenario() {
         "1" \
         "1" \
         "iana.org" \
-        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 60 sudo env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --enable-forwarding --domains iana.org" \
+        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 60 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --enable-forwarding --domains iana.org" \
         "" \
         "0.25"
       ;;

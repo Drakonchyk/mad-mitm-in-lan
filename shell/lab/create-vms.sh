@@ -32,7 +32,7 @@ create_vm "${GATEWAY_NAME}" \
   --osinfo "${OS_VARIANT}" \
   --disk "path=$(vm_disk_path "${GATEWAY_NAME}"),format=qcow2,bus=virtio" \
   --network "network=default,model=virtio,mac=${GATEWAY_UP_MAC}" \
-  --network "network=${LAB_NAME},model=virtio,mac=${GATEWAY_LAB_MAC}" \
+  --network "bridge=${LAB_SWITCH_BRIDGE},virtualport_type=openvswitch,model=virtio,mac=${GATEWAY_LAB_MAC}" \
   --graphics none \
   --console pty,target_type=serial \
   --import \
@@ -46,7 +46,7 @@ create_vm "${VICTIM_NAME}" \
   --cpu host-passthrough \
   --osinfo "${OS_VARIANT}" \
   --disk "path=$(vm_disk_path "${VICTIM_NAME}"),format=qcow2,bus=virtio" \
-  --network "network=${LAB_NAME},model=virtio,mac=${VICTIM_MAC}" \
+  --network "bridge=${LAB_SWITCH_BRIDGE},virtualport_type=openvswitch,model=virtio,mac=${VICTIM_MAC}" \
   --graphics none \
   --console pty,target_type=serial \
   --import \
@@ -60,7 +60,7 @@ create_vm "${ATTACKER_NAME}" \
   --cpu host-passthrough \
   --osinfo "${OS_VARIANT}" \
   --disk "path=$(vm_disk_path "${ATTACKER_NAME}"),format=qcow2,bus=virtio" \
-  --network "network=${LAB_NAME},model=virtio,mac=${ATTACKER_MAC}" \
+  --network "bridge=${LAB_SWITCH_BRIDGE},virtualport_type=openvswitch,model=virtio,mac=${ATTACKER_MAC}" \
   --graphics none \
   --console pty,target_type=serial \
   --import \

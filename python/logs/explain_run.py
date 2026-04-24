@@ -6,6 +6,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from metrics.run_artifacts import detector_delta_path
+
 
 def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -128,7 +130,7 @@ def main() -> int:
 
     meta = load_json(meta_path)
     attacker_ip = meta.get("attacker_ip", "")
-    detector_records = load_jsonl(run_dir / "victim" / "detector.delta.jsonl")
+    detector_records = load_jsonl(detector_delta_path(run_dir))
     probe_windows = parse_probe_windows(run_dir / "victim" / "traffic-window.txt")
     post_window_key, post_window_value = summarize_post_window_probe(
         run_dir / "victim" / "post-window-probe.txt",
@@ -142,6 +144,8 @@ def main() -> int:
             "arp_spoof_packet_seen",
             "icmp_redirect_packet_seen",
             "dns_spoof_packet_seen",
+            "rogue_dhcp_server_seen",
+            "dhcp_binding_conflict_seen",
         )
         if counts.get(key, 0)
     }
@@ -155,6 +159,7 @@ def main() -> int:
             "icmp_redirects_seen",
             "domain_resolution_changed",
             "domain_resolution_restored",
+            "rogue_dhcp_server_cleared",
         )
         if counts.get(key, 0)
     }

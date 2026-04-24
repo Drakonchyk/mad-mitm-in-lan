@@ -1,5 +1,0 @@
-<network>
-  <name>mitm-lab</name>
-  <bridge name='virbr11' stp='on' delay='0'/>
-  <domain name='mitm.lab'/>
-</network>

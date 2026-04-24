@@ -30,6 +30,24 @@ The report uses two timing notions:
 
 That means detector, Zeek, and Suricata are compared on a consistent basis even when their supported attack evidence differs.
 
+When packet capture is enabled, the observed-wire timing basis should prefer the raw switch-mirror capture on `pcap/sensor.pcap`. The detector's own JSON event stream is not treated as ground truth.
+
+## Wire Truth Versus Alert Counts
+
+Two count families appear in the generated outputs and they should not be read as the same thing:
+
+- `wire-truth attack events`
+  - normalized attack evidence extracted from the mirrored switch capture
+  - this is the preferred ground-truth basis for packet-level scenarios
+- sensor alert counts
+  - detector packet alerts, Zeek notices, and Suricata alerts
+  - these are raw sensor-side alert volumes and may exceed wire-truth counts because repeated spoof packets can trigger repeated alerts
+
+Example:
+
+- a 30-second ARP MITM run may show 8 wire-truth ARP events but 16 detector packet alerts
+- that does not mean the evaluator is wrong; it means the switch-truth parser is counting normalized observed attack events while the sensor is counting repeated alerting packets
+
 ## Detector Semantic Alerts
 
 The thesis-level detector alert count uses semantic detector state transitions rather than raw packet-observation events.
@@ -40,9 +58,12 @@ Included semantic detector alerts:
 - `multiple_gateway_macs_seen`
 - `icmp_redirects_seen`
 - `domain_resolution_changed`
+- `rogue_dhcp_server_seen`
+- `dhcp_binding_conflict_seen`
 - `gateway_mac_restored`
 - `single_gateway_mac_restored`
 - `domain_resolution_restored`
+- `rogue_dhcp_server_cleared`
 
 Raw packet-level observations such as `arp_spoof_packet_seen` are still preserved in `detector.delta.jsonl`, but they are not the main alert count shown in summaries and thesis plots.
 
@@ -69,14 +90,20 @@ Raw packet-level observations such as `arp_spoof_packet_seen` are still preserve
 - run metadata:
   - `run-meta.json`
 - detector events:
-  - `victim/detector.delta.jsonl`
+  - `detector/detector.delta.jsonl`
 - victim probe loop:
   - `victim/traffic-window.txt`
 - throughput sample:
   - `victim/iperf3.json`
 - Zeek comparator:
-  - `zeek/victim/notice.log`
+  - `zeek/host/notice.log`
 - Suricata comparator:
-  - `suricata/victim/eve.json`
+  - `suricata/host/eve.json`
 - optional wire truth support:
-  - `pcap/victim.pcap`
+  - `pcap/sensor.pcap`
+  - `pcap/victim.pcap` as a fallback/debug capture
+
+## Current Comparator Limitation
+
+- On the current host Suricata build/config, the ARP comparison rule path may be unavailable.
+- In that case Suricata should be interpreted as a DHCP+DNS+ICMP comparator only, and the run summary will state that explicitly.

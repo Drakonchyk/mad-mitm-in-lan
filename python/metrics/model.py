@@ -5,50 +5,59 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-EVALUATION_CACHE_VERSION = 5
+EVALUATION_CACHE_VERSION = 9
 EVALUATION_DEPENDENCY_PATHS = [
     Path(__file__).resolve(),
     Path(__file__).resolve().with_name("core.py"),
     Path(__file__).resolve().with_name("parsers.py"),
-    Path(__file__).resolve().with_name("aggregate.py"),
-    Path(__file__).resolve().with_name("evaluator.py"),
-    Path(__file__).resolve().with_name("primitives.py"),
 ]
 
 ATTACK_TYPE_ORDER = [
     "arp_spoof",
     "icmp_redirect",
     "dns_spoof",
+    "dhcp_spoof",
 ]
 
 ATTACK_TYPE_LABELS = {
     "arp_spoof": "ARP spoof",
     "icmp_redirect": "ICMP redirect",
     "dns_spoof": "DNS spoof",
+    "dhcp_spoof": "DHCP spoof",
 }
 
 GROUND_TRUTH_ATTACK_EVENTS = {
     "arp_poison_cycle": "arp_spoof",
+    "arp_spoof_observed": "arp_spoof",
     "icmp_redirect_observed": "icmp_redirect",
     "dns_spoof": "dns_spoof",
+    "dns_spoof_observed": "dns_spoof",
+    "rogue_dhcp_offer": "dhcp_spoof",
+    "rogue_dhcp_ack": "dhcp_spoof",
+    "rogue_dhcp_server_observed": "dhcp_spoof",
 }
 
 DETECTOR_ALERT_EVENTS = {
     "arp_spoof_packet_seen": "arp_spoof",
     "icmp_redirect_packet_seen": "icmp_redirect",
     "dns_spoof_packet_seen": "dns_spoof",
+    "rogue_dhcp_server_seen": "dhcp_spoof",
+    "dhcp_binding_conflict_seen": "dhcp_spoof",
 }
 
 ZEEK_ALERT_TYPES = {
     "MITMLab::ARP_Spoof": "arp_spoof",
     "MITMLab::ICMP_Redirect": "icmp_redirect",
     "MITMLab::DNS_Spoof": "dns_spoof",
+    "MITMLab::DHCP_Spoof": "dhcp_spoof",
 }
 
 SURICATA_ALERT_TYPES = {
     "MITM-LAB live ARP reply from attacker claims gateway IP to victim": "arp_spoof",
+    "MITM-LAB Suricata EVE ARP reply from attacker claims gateway IP to victim": "arp_spoof",
     "MITM-LAB live ICMP redirect from attacker to victim": "icmp_redirect",
     "MITM-LAB live DNS answer contains attacker IP": "dns_spoof",
+    "MITM-LAB live rogue DHCP reply from attacker": "dhcp_spoof",
 }
 
 SENSOR_COVERAGE = {
@@ -56,16 +65,19 @@ SENSOR_COVERAGE = {
         "arp_spoof": True,
         "icmp_redirect": True,
         "dns_spoof": True,
+        "dhcp_spoof": True,
     },
     "zeek": {
         "arp_spoof": True,
         "icmp_redirect": True,
         "dns_spoof": True,
+        "dhcp_spoof": True,
     },
     "suricata": {
         "arp_spoof": False,
         "icmp_redirect": True,
         "dns_spoof": True,
+        "dhcp_spoof": True,
     },
 }
 
@@ -96,11 +108,20 @@ class RunEvaluation:
     ground_truth_observed_wire_events: int
     ground_truth_control_events: int
     ground_truth_attack_started_at: str | None
+    ground_truth_attack_ended_at: str | None
+    ground_truth_capture_duration_seconds: float | None
+    ground_truth_attack_duration_seconds: float | None
     ground_truth_attack_types: dict[str, int]
     ground_truth_attack_type_first_seen_at: dict[str, str]
+    ground_truth_attack_type_durations_seconds: dict[str, float | None]
+    ground_truth_attack_type_packet_rates_pps: dict[str, float | None]
     ground_truth_attacker_action_types: dict[str, int]
     ground_truth_observed_wire_types: dict[str, int]
     ground_truth_control_types: dict[str, int]
+    ground_truth_dns_query_count: int
+    ground_truth_dns_spoof_success_ratio: float | None
+    ground_truth_arp_spoof_direction_counts: dict[str, int]
+    ground_truth_control_plane_packet_counts: dict[str, int]
     detector_alert_events: int
     detector_alert_types: dict[str, int]
     detector_unique_alert_type_count: int
@@ -144,11 +165,20 @@ class RunEvaluation:
             "ground_truth_observed_wire_events": self.ground_truth_observed_wire_events,
             "ground_truth_control_events": self.ground_truth_control_events,
             "ground_truth_attack_started_at": self.ground_truth_attack_started_at,
+            "ground_truth_attack_ended_at": self.ground_truth_attack_ended_at,
+            "ground_truth_capture_duration_seconds": self.ground_truth_capture_duration_seconds,
+            "ground_truth_attack_duration_seconds": self.ground_truth_attack_duration_seconds,
             "ground_truth_attack_types": self.ground_truth_attack_types,
             "ground_truth_attack_type_first_seen_at": self.ground_truth_attack_type_first_seen_at,
+            "ground_truth_attack_type_durations_seconds": self.ground_truth_attack_type_durations_seconds,
+            "ground_truth_attack_type_packet_rates_pps": self.ground_truth_attack_type_packet_rates_pps,
             "ground_truth_attacker_action_types": self.ground_truth_attacker_action_types,
             "ground_truth_observed_wire_types": self.ground_truth_observed_wire_types,
             "ground_truth_control_types": self.ground_truth_control_types,
+            "ground_truth_dns_query_count": self.ground_truth_dns_query_count,
+            "ground_truth_dns_spoof_success_ratio": self.ground_truth_dns_spoof_success_ratio,
+            "ground_truth_arp_spoof_direction_counts": self.ground_truth_arp_spoof_direction_counts,
+            "ground_truth_control_plane_packet_counts": self.ground_truth_control_plane_packet_counts,
             "detector_alert_events": self.detector_alert_events,
             "detector_alert_types": self.detector_alert_types,
             "detector_unique_alert_type_count": self.detector_unique_alert_type_count,

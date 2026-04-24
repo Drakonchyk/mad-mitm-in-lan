@@ -1,6 +1,7 @@
 @load base/frameworks/notice
 @load base/packet-protocols/ethernet
 @load base/packet-protocols/icmp
+@load base/protocols/dhcp
 @load policy/tuning/json-logs
 
 module MITMLab;
@@ -10,6 +11,7 @@ export {
         ARP_Spoof,
         ICMP_Redirect,
         DNS_Spoof,
+        DHCP_Spoof,
     };
 
     const gateway_ip: addr = __GATEWAY_IP__ &redef;
@@ -85,4 +87,34 @@ event dns_A_reply(c: connection, msg: dns_msg, ans: dns_answer, a: addr)
             $sub=fmt("query=%s answer=%s", query, a),
             $src=c$id$resp_h,
             $dst=c$id$orig_h]);
+    }
+
+event dhcp_message(c: connection, is_orig: bool, msg: DHCP::Msg, options: DHCP::Options)
+    {
+    if ( msg$op != 2 )
+        return;
+
+    if ( msg$m_type != 2 && msg$m_type != 5 )
+        return;
+
+    local server = msg$siaddr;
+
+    if ( server == 0.0.0.0 )
+        {
+        if ( c$id$orig_h == attacker_ip || c$id$orig_h == gateway_ip )
+            server = c$id$orig_h;
+        else if ( c$id$resp_h == attacker_ip || c$id$resp_h == gateway_ip )
+            server = c$id$resp_h;
+        }
+
+    if ( server != attacker_ip )
+        return;
+
+    local msg_type = DHCP::message_types[msg$m_type];
+
+    NOTICE([$note=DHCP_Spoof,
+            $msg=fmt("Rogue DHCP %s from attacker IP %s assigned %s", msg_type, server, msg$yiaddr),
+            $sub=fmt("dhcp_type=%s yiaddr=%s siaddr=%s chaddr=%s xid=%s", msg_type, msg$yiaddr, msg$siaddr, msg$chaddr, msg$xid),
+            $src=server,
+            $dst=victim_ip]);
     }

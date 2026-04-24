@@ -13,7 +13,7 @@ help:
 		'  make start      Start all lab VMs' \
 		'  make status     Show lab status and console hints' \
 		'  make baseline   Run an automated clean-traffic experiment and collect artifacts' \
-		'                 Optional env: ZEEK_ENABLE=1 SURICATA_ENABLE=1 PCAP_ENABLE=0' \
+		'                 Optional env: ZEEK_ENABLE=0 SURICATA_ENABLE=0 PCAP_ENABLE=0' \
 		'  make smoke-test Run a short end-to-end validation of baseline and automated scenario flows' \
 		'  make summarize  Summarize one run or the whole results/ directory' \
 		'  make experiment-plan ARGS="--skip 2 --skip-scenario baseline"' \
@@ -21,15 +21,15 @@ help:
 		'  make experiment-plan-extra ARGS="--skip 1"' \
 		'                 Run supplementary scenarios separately from the main thesis dataset' \
 		'  make experiment-report' \
-		'                 Export CSV/JSON data, figures, tables, and report markdown from results/' \
+		'                 Build one combined report from all runs under results/' \
 		'  make experiment-report-extra' \
-		'                 Export CSV/JSON data, figures, tables, and report markdown for supplementary runs' \
+		'                 Compatibility alias for make experiment-report' \
 		'  make demo-start' \
 		'                 Provision if needed and ensure the demo lab is up' \
 		'  make demo-scenario DURATION=90' \
-		'                 Run one focused arp-mitm-dns demo scenario (detector always on, comparators optional)' \
-		'  make demo-capture HOST=victim IFACE=vnic0 FILTER="arp or icmp or port 53"' \
-		'                 Open a live tcpdump capture on a lab VM for the demo path' \
+		'                 Run one focused arp-mitm-dns demo scenario (detector always on, comparators on by default)' \
+		'  make demo-capture HOST=sensor IFACE=mitm-sensor0 FILTER="arp or icmp or port 53 or port 67 or port 68"' \
+		'                 Open a live tcpdump capture on the mirrored switch port or on a lab VM' \
 		'  make demo-report' \
 		'                 Build a small deterministic report from the latest retained run per scenario' \
 		'  make scenario-help' \
@@ -42,6 +42,12 @@ help:
 		'                 Run automated ARP MITM with forwarding enabled' \
 		'  make scenario-arp-mitm-dns DURATION=90' \
 		'                 Run the canonical focused arp-mitm-dns scenario used in the plan' \
+		'  make scenario-dhcp-spoof DURATION=60' \
+		'                 Run a focused rogue-DHCP verification scenario on the lab LAN' \
+		'  make scenario-intermittent-dhcp-spoof DURATION=90' \
+		'                 Run pulsed rogue-DHCP spoofing windows for short-burst validation' \
+		'  make scenario-dhcp-offer-only DURATION=60' \
+		'                 Run rogue DHCP offer-only traffic without ACKs' \
 		'  make scenario-mitigation-recovery DURATION=120' \
 		'                 Run automated mitigation and recovery' \
 		'  make scenario-compare TARGET=results' \

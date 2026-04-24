@@ -6,7 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../common.sh"
 
 info "Checking host prerequisites"
 
-for cmd in virsh virt-install qemu-img curl; do
+for cmd in virsh virt-install qemu-img curl ovs-vsctl ip; do
   require_cmd "$cmd"
 done
 

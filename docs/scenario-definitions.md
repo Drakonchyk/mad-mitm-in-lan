@@ -22,6 +22,7 @@ stateDiagram-v2
 | `arp-poison-no-forward` | 90 s | `t=10..70 s` | poisoning that breaks traffic but does not create a transparent path |
 | `arp-mitm-forward` | 90 s | `t=10..70 s` | transparent MITM with forwarding enabled |
 | `arp-mitm-dns` | 90 s | `t=10..70 s` | transparent MITM plus focused DNS spoofing |
+| `dhcp-spoof` | 60 s | `t=10..50 s` | focused rogue DHCP advertisement verification on the lab LAN |
 | `mitigation-recovery` | 120 s | `t=10..45 s` attack, `t=45 s` mitigation | restoration and recovery timing |
 
 ### Main Timing Windows
@@ -40,6 +41,10 @@ stateDiagram-v2
   - `t=0..10 s`: clean prefix
   - `t=10..70 s`: ARP MITM + DNS spoof active
   - `t=70..90 s`: recovery tail
+- `dhcp-spoof`
+  - `t=0..10 s`: clean prefix
+  - `t=10..50 s`: rogue DHCP offer/ACK broadcasts active
+  - `t=50..60 s`: recovery tail
 - `mitigation-recovery`
   - `t=0..10 s`: clean prefix
   - `t=10..45 s`: ARP MITM + DNS spoof active
@@ -51,6 +56,8 @@ stateDiagram-v2
 | Scenario | Duration | Purpose |
 | --- | --- | --- |
 | `intermittent-arp-mitm-dns` | 90 s | pulse attack windows to test reaction speed and missed short windows |
+| `intermittent-dhcp-spoof` | 90 s | pulse rogue DHCP windows to test short-burst DHCP detection and recovery |
+| `dhcp-offer-only` | 60 s | rogue DHCP offers without ACKs to test early-stage DHCP server detection |
 | `noisy-benign-baseline` | 90 s | benign LAN churn to test false positives |
 | `reduced-observability` | 90 s | detector sampling reduction to test degraded visibility |
 
@@ -66,6 +73,20 @@ stateDiagram-v2
   - `t=45..55 s`: attack off
   - `t=55..60 s`: attack on
   - `t=60..90 s`: clean tail
+- `intermittent-dhcp-spoof`
+  - `t=0..10 s`: clean prefix
+  - `t=10..15 s`: rogue DHCP on
+  - `t=15..25 s`: attack off
+  - `t=25..30 s`: rogue DHCP on
+  - `t=30..40 s`: attack off
+  - `t=40..45 s`: rogue DHCP on
+  - `t=45..55 s`: attack off
+  - `t=55..60 s`: rogue DHCP on
+  - `t=60..90 s`: clean tail
+- `dhcp-offer-only`
+  - `t=0..10 s`: clean prefix
+  - `t=10..50 s`: rogue DHCP offers only, no ACK replies
+  - `t=50..60 s`: recovery tail
 - `noisy-benign-baseline`
   - benign DNS refreshes, neighbor cache churn, and extra background traffic
   - no attacker-controlled poisoning or spoofing
@@ -79,7 +100,7 @@ stateDiagram-v2
   - `make demo-start`
   - `make demo-scenario`
   - `make demo-report`
-  - `make demo-capture HOST=victim IFACE=vnic0`
+  - `make demo-capture HOST=sensor IFACE=mitm-sensor0`
 - main plan:
   - `make experiment-plan`
 - supplementary plan:
@@ -88,4 +109,7 @@ stateDiagram-v2
   - `make scenario-arp-poison-no-forward`
   - `make scenario-arp-mitm-forward`
   - `make scenario-arp-mitm-dns`
+  - `make scenario-dhcp-spoof`
+  - `make scenario-intermittent-dhcp-spoof`
+  - `make scenario-dhcp-offer-only`
   - `make scenario-mitigation-recovery`

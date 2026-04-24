@@ -22,12 +22,17 @@ DETECTOR_STATE_EVENTS = {
     "icmp_redirects_seen",
     "domain_resolution_changed",
     "domain_resolution_restored",
+    "rogue_dhcp_server_seen",
+    "rogue_dhcp_server_cleared",
+    "dhcp_binding_conflict_seen",
 }
 
 DETECTOR_PACKET_ALERT_EVENTS = {
     "arp_spoof_packet_seen",
     "icmp_redirect_packet_seen",
     "dns_spoof_packet_seen",
+    "rogue_dhcp_server_seen",
+    "dhcp_binding_conflict_seen",
 }
 
 
@@ -58,6 +63,47 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
         if isinstance(payload, dict):
             records.append(payload)
     return records
+
+
+def detector_artifact_dir(run_dir: Path) -> Path:
+    detector_dir = run_dir / "detector"
+    if detector_dir.exists():
+        return detector_dir
+    return run_dir / "victim"
+
+
+def detector_delta_path(run_dir: Path) -> Path:
+    return detector_artifact_dir(run_dir) / "detector.delta.jsonl"
+
+
+def detector_state_path(run_dir: Path) -> Path:
+    return detector_artifact_dir(run_dir) / "detector.state.json"
+
+
+def detector_explained_path(run_dir: Path) -> Path:
+    return detector_artifact_dir(run_dir) / "detector-explained.txt"
+
+
+def zeek_artifact_dir(run_dir: Path) -> Path:
+    for candidate in (run_dir / "zeek" / "host", run_dir / "zeek" / "victim"):
+        if candidate.exists():
+            return candidate
+    return run_dir / "zeek" / "host"
+
+
+def zeek_notice_path(run_dir: Path) -> Path:
+    return zeek_artifact_dir(run_dir) / "notice.log"
+
+
+def suricata_artifact_dir(run_dir: Path) -> Path:
+    for candidate in (run_dir / "suricata" / "host", run_dir / "suricata" / "victim"):
+        if candidate.exists():
+            return candidate
+    return run_dir / "suricata" / "host"
+
+
+def suricata_eve_path(run_dir: Path) -> Path:
+    return suricata_artifact_dir(run_dir) / "eve.json"
 
 
 def parse_time(value: str | None) -> datetime | None:

@@ -212,21 +212,32 @@ def event_recall(
 
 
 def render_single(evaluation: RunEvaluation) -> str:
+    attack_count_label = "Ground truth attack packets" if evaluation.ground_truth_source in {"switch_pcap", "victim_pcap"} else "Ground truth attack events"
+    observed_count_label = "Ground truth observed wire packets" if evaluation.ground_truth_source in {"switch_pcap", "victim_pcap"} else "Ground truth observed wire events"
     lines = [
         f"Run: {evaluation.run_id}",
         f"Scenario: {evaluation.scenario}",
         f"Ground truth attack present: {evaluation.attack_present}",
         f"Ground truth source: {evaluation.ground_truth_source}",
         f"Ground truth total events: {evaluation.ground_truth_total_events}",
-        f"Ground truth attack events: {evaluation.ground_truth_attack_events}",
+        f"{attack_count_label}: {evaluation.ground_truth_attack_events}",
         f"Ground truth attacker action events: {evaluation.ground_truth_attacker_action_events}",
-        f"Ground truth observed wire events: {evaluation.ground_truth_observed_wire_events}",
+        f"{observed_count_label}: {evaluation.ground_truth_observed_wire_events}",
         f"Ground truth control events: {evaluation.ground_truth_control_events}",
         f"Ground truth attack types: {json.dumps(evaluation.ground_truth_attack_types, sort_keys=True)}",
         f"Ground truth attack type first seen at: {json.dumps(evaluation.ground_truth_attack_type_first_seen_at, sort_keys=True)}",
+        f"Ground truth attack ended at: {evaluation.ground_truth_attack_ended_at or 'n/a'}",
+        f"Ground truth capture duration (s): {evaluation.ground_truth_capture_duration_seconds if evaluation.ground_truth_capture_duration_seconds is not None else 'n/a'}",
+        f"Ground truth attack duration (s): {evaluation.ground_truth_attack_duration_seconds if evaluation.ground_truth_attack_duration_seconds is not None else 'n/a'}",
+        f"Ground truth attack type durations (s): {json.dumps(evaluation.ground_truth_attack_type_durations_seconds, sort_keys=True)}",
+        f"Ground truth attack type packet rates (pps): {json.dumps(evaluation.ground_truth_attack_type_packet_rates_pps, sort_keys=True)}",
         f"Ground truth attacker action types: {json.dumps(evaluation.ground_truth_attacker_action_types, sort_keys=True)}",
         f"Ground truth observed wire types: {json.dumps(evaluation.ground_truth_observed_wire_types, sort_keys=True)}",
         f"Ground truth control types: {json.dumps(evaluation.ground_truth_control_types, sort_keys=True)}",
+        f"Ground truth DNS query count: {evaluation.ground_truth_dns_query_count}",
+        f"Ground truth DNS spoof success ratio: {evaluation.ground_truth_dns_spoof_success_ratio if evaluation.ground_truth_dns_spoof_success_ratio is not None else 'n/a'}",
+        f"Ground truth ARP spoof direction counts: {json.dumps(evaluation.ground_truth_arp_spoof_direction_counts, sort_keys=True)}",
+        f"Ground truth control-plane packet counts: {json.dumps(evaluation.ground_truth_control_plane_packet_counts, sort_keys=True)}",
         f"Ground truth attack started at: {evaluation.ground_truth_attack_started_at or 'n/a'}",
         f"Detector alert events: {evaluation.detector_alert_events}",
         f"Detector unique alert types: {evaluation.detector_unique_alert_type_count}",

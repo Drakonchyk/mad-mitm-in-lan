@@ -25,15 +25,15 @@ SCENARIOS: dict[str, ScenarioDefinition] = {
         name="arp-poison-no-forward",
         group="main",
         label="arp-poison-no-forward",
-        detector_events=frozenset({"gateway_mac_changed", "multiple_gateway_macs_seen", "icmp_redirects_seen"}),
-        attack_types=frozenset({"arp_spoof", "icmp_redirect"}),
+        detector_events=frozenset({"gateway_mac_changed", "multiple_gateway_macs_seen"}),
+        attack_types=frozenset({"arp_spoof"}),
     ),
     "arp-mitm-forward": ScenarioDefinition(
         name="arp-mitm-forward",
         group="main",
         label="arp-mitm-forward",
-        detector_events=frozenset({"gateway_mac_changed", "multiple_gateway_macs_seen", "icmp_redirects_seen"}),
-        attack_types=frozenset({"arp_spoof", "icmp_redirect"}),
+        detector_events=frozenset({"gateway_mac_changed", "multiple_gateway_macs_seen"}),
+        attack_types=frozenset({"arp_spoof"}),
     ),
     "arp-mitm-dns": ScenarioDefinition(
         name="arp-mitm-dns",
@@ -42,10 +42,19 @@ SCENARIOS: dict[str, ScenarioDefinition] = {
         detector_events=frozenset({
             "gateway_mac_changed",
             "multiple_gateway_macs_seen",
-            "icmp_redirects_seen",
             "domain_resolution_changed",
         }),
-        attack_types=frozenset({"arp_spoof", "icmp_redirect", "dns_spoof"}),
+        attack_types=frozenset({"arp_spoof", "dns_spoof"}),
+    ),
+    "dhcp-spoof": ScenarioDefinition(
+        name="dhcp-spoof",
+        group="main",
+        label="dhcp-spoof",
+        detector_events=frozenset({
+            "rogue_dhcp_server_seen",
+            "dhcp_binding_conflict_seen",
+        }),
+        attack_types=frozenset({"dhcp_spoof"}),
     ),
     "mitigation-recovery": ScenarioDefinition(
         name="mitigation-recovery",
@@ -54,10 +63,9 @@ SCENARIOS: dict[str, ScenarioDefinition] = {
         detector_events=frozenset({
             "gateway_mac_changed",
             "multiple_gateway_macs_seen",
-            "icmp_redirects_seen",
             "domain_resolution_changed",
         }),
-        attack_types=frozenset({"arp_spoof", "icmp_redirect", "dns_spoof"}),
+        attack_types=frozenset({"arp_spoof", "dns_spoof"}),
     ),
     "intermittent-arp-mitm-dns": ScenarioDefinition(
         name="intermittent-arp-mitm-dns",
@@ -66,10 +74,9 @@ SCENARIOS: dict[str, ScenarioDefinition] = {
         detector_events=frozenset({
             "gateway_mac_changed",
             "multiple_gateway_macs_seen",
-            "icmp_redirects_seen",
             "domain_resolution_changed",
         }),
-        attack_types=frozenset({"arp_spoof", "icmp_redirect", "dns_spoof"}),
+        attack_types=frozenset({"arp_spoof", "dns_spoof"}),
     ),
     "noisy-benign-baseline": ScenarioDefinition(
         name="noisy-benign-baseline",
@@ -85,10 +92,29 @@ SCENARIOS: dict[str, ScenarioDefinition] = {
         detector_events=frozenset({
             "gateway_mac_changed",
             "multiple_gateway_macs_seen",
-            "icmp_redirects_seen",
             "domain_resolution_changed",
         }),
-        attack_types=frozenset({"arp_spoof", "icmp_redirect", "dns_spoof"}),
+        attack_types=frozenset({"arp_spoof", "dns_spoof"}),
+    ),
+    "intermittent-dhcp-spoof": ScenarioDefinition(
+        name="intermittent-dhcp-spoof",
+        group="supplementary",
+        label="intermittent-dhcp-spoof",
+        detector_events=frozenset({
+            "rogue_dhcp_server_seen",
+            "dhcp_binding_conflict_seen",
+        }),
+        attack_types=frozenset({"dhcp_spoof"}),
+    ),
+    "dhcp-offer-only": ScenarioDefinition(
+        name="dhcp-offer-only",
+        group="supplementary",
+        label="dhcp-offer-only",
+        detector_events=frozenset({
+            "rogue_dhcp_server_seen",
+            "dhcp_binding_conflict_seen",
+        }),
+        attack_types=frozenset({"dhcp_spoof"}),
     ),
 }
 

@@ -8,7 +8,13 @@ EXPERIMENT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 WARMUP_RUNS="${WARMUP_RUNS:-1}"
 MEASURED_RUNS="${MEASURED_RUNS:-10}"
-PLAN_SCENARIOS="${PLAN_SCENARIOS:-baseline arp-poison-no-forward arp-mitm-forward arp-mitm-dns mitigation-recovery}"
+PLAN_SCENARIOS="${PLAN_SCENARIOS:-baseline arp-poison-no-forward arp-mitm-forward arp-mitm-dns dhcp-spoof mitigation-recovery}"
+PCAP_RETENTION_POLICY="${PCAP_RETENTION_POLICY:-none}"
+PCAP_ENABLE="${PCAP_ENABLE:-1}"
+GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE:-0}"
+PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE:-0}"
+IPERF_ENABLE="${IPERF_ENABLE:-0}"
+POST_ATTACK_SETTLE_SECONDS="${POST_ATTACK_SETTLE_SECONDS:-0}"
 REMOTE_ROOT="$(research_workspace_root)"
 PLAN_SKIP_RUNS=0
 PLAN_START_RUN=1
@@ -90,9 +96,11 @@ run_window() {
   ATTACK_JOB_HOST="${ATTACK_JOB_HOST_OVERRIDE:-attacker}" \
   ATTACK_JOB_LABEL="${scenario}" \
   ATTACK_JOB_CMD="${attack_cmd}" \
+  ATTACK_JOB_USE_SUDO="1" \
   AUX_JOB_HOST="${AUX_JOB_HOST_OVERRIDE:-victim}" \
   AUX_JOB_LABEL="${scenario}-aux" \
   AUX_JOB_CMD="${aux_cmd}" \
+  AUX_JOB_USE_SUDO="$([[ -n "${aux_cmd}" ]] && printf '1' || printf '0')" \
   PLAN_RUN_INDEX="${run_index}" \
   PLAN_WARMUP="${warmup}" \
   PLAN_DURATION_SECONDS="${duration}" \
@@ -102,6 +110,11 @@ run_window() {
   PLAN_FORWARDING_ENABLED="${forwarding_enabled}" \
   PLAN_DNS_SPOOF_ENABLED="${dns_spoof_enabled}" \
   PLAN_SPOOFED_DOMAINS="${spoofed_domains}" \
+  PCAP_ENABLE="${PCAP_ENABLE}" \
+  GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE}" \
+  PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE}" \
+  IPERF_ENABLE="${IPERF_ENABLE}" \
+  POST_ATTACK_SETTLE_SECONDS="${POST_ATTACK_SETTLE_SECONDS}" \
     "${EXPERIMENT_SCRIPT_DIR}/run-scenario-window.sh" "${scenario}" "${duration}" "${note}"
 }
 
@@ -140,7 +153,7 @@ run_scenario() {
         "0" \
         "0" \
         "" \
-        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 60 sudo env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf arp-poison --interface vnic0" \
+        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 60 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf arp-poison --interface vnic0" \
         ""
       ;;
     arp-mitm-forward)
@@ -156,7 +169,7 @@ run_scenario() {
         "1" \
         "0" \
         "" \
-        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 60 sudo env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf arp-poison --interface vnic0 --enable-forwarding" \
+        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 60 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf arp-poison --interface vnic0 --enable-forwarding" \
         ""
       ;;
     arp-mitm-dns)
@@ -172,7 +185,23 @@ run_scenario() {
         "1" \
         "1" \
         "iana.org" \
-        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 60 sudo env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --enable-forwarding --domains iana.org" \
+        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 60 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --enable-forwarding --domains iana.org" \
+        ""
+      ;;
+    dhcp-spoof)
+      run_window \
+        "dhcp-spoof" \
+        "60" \
+        "Planned rogue DHCP offer and ACK broadcast run" \
+        "${run_index}" \
+        "${warmup}" \
+        "10" \
+        "50" \
+        "" \
+        "0" \
+        "0" \
+        "" \
+        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 40 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf dhcp-spoof --interface vnic0 --interval 2.0" \
         ""
       ;;
     mitigation-recovery)
@@ -188,8 +217,8 @@ run_scenario() {
         "1" \
         "1" \
         "iana.org" \
-        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 35 sudo env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --enable-forwarding --domains iana.org" \
-        "sleep 45; sudo ip neigh replace '${GATEWAY_IP}' lladdr '${GATEWAY_LAB_MAC}' nud permanent dev vnic0"
+        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 35 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --enable-forwarding --domains iana.org" \
+        "sleep 45; ip neigh replace '${GATEWAY_IP}' lladdr '${GATEWAY_LAB_MAC}' nud permanent dev vnic0"
       ;;
     *)
       warn "Unknown planned scenario: ${scenario}"

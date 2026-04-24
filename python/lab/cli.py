@@ -31,6 +31,8 @@ def parse_args() -> argparse.Namespace:
     render_zeek_parser = subparsers.add_parser("render-zeek-policy")
     render_zeek_parser.add_argument("repo_root")
     render_zeek_parser.add_argument("output_path")
+    render_zeek_parser.add_argument("--attacker-ip")
+    render_zeek_parser.add_argument("--victim-ip")
 
     json_array_parser = subparsers.add_parser("json-string-array")
     json_array_parser.add_argument("text")
@@ -48,7 +50,11 @@ def main() -> int:
         LabTemplateRenderer.from_repo_root(Path(args.repo_root)).write_detector(Path(args.output_path))
         return 0
     if args.command == "render-zeek-policy":
-        LabTemplateRenderer.from_repo_root(Path(args.repo_root)).write_zeek_policy(Path(args.output_path))
+        LabTemplateRenderer.from_repo_root(
+            Path(args.repo_root),
+            attacker_ip=args.attacker_ip,
+            victim_ip=args.victim_ip,
+        ).write_zeek_policy(Path(args.output_path))
         return 0
     if args.command == "json-string-array":
         json_string_array_from_words(args.text)

@@ -9,6 +9,7 @@ from metrics.core import load_or_evaluate_single_run
 from metrics.parsers import find_run_dirs
 from metrics.run_artifacts import (
     DETECTOR_STATE_EVENTS,
+    detector_delta_path,
     detector_event_counter,
     load_json,
     load_jsonl,
@@ -58,7 +59,7 @@ def build_rows(target: Path, include_warmups: bool, *, use_cache: bool = True, p
             continue
 
         evaluation = load_or_evaluate_single_run(run_dir, use_cache=use_cache)
-        detector_records = load_jsonl(run_dir / "victim" / "detector.delta.jsonl")
+        detector_records = load_jsonl(detector_delta_path(run_dir))
         detector_counts = detector_event_counter(detector_records)
         spoofed_domains = {str(domain) for domain in meta.get("spoofed_domains", []) if domain}
         attack_start = parse_time(meta.get("attack_started_at"))
@@ -123,6 +124,18 @@ def build_rows(target: Path, include_warmups: bool, *, use_cache: bool = True, p
             "dns_spoof_enabled": bool(meta.get("dns_spoof_enabled", False)),
             "spoofed_domains": sorted(spoofed_domains),
             "detector_first_alert_at": evaluation.detector_first_alert_at,
+            "ground_truth_source": evaluation.ground_truth_source,
+            "ground_truth_attack_events": evaluation.ground_truth_attack_events,
+            "ground_truth_attack_started_at": evaluation.ground_truth_attack_started_at,
+            "ground_truth_attack_ended_at": evaluation.ground_truth_attack_ended_at,
+            "ground_truth_capture_duration_seconds": evaluation.ground_truth_capture_duration_seconds,
+            "ground_truth_attack_duration_seconds": evaluation.ground_truth_attack_duration_seconds,
+            "ground_truth_dns_query_count": evaluation.ground_truth_dns_query_count,
+            "ground_truth_dns_spoof_success_ratio": evaluation.ground_truth_dns_spoof_success_ratio,
+            "ground_truth_attack_types": dict(evaluation.ground_truth_attack_types),
+            "ground_truth_attack_type_packet_rates_pps": dict(evaluation.ground_truth_attack_type_packet_rates_pps),
+            "ground_truth_arp_spoof_direction_counts": dict(evaluation.ground_truth_arp_spoof_direction_counts),
+            "ground_truth_control_plane_packet_counts": dict(evaluation.ground_truth_control_plane_packet_counts),
             "detector_first_arp_alert_at": detector_first_arp_alert_at,
             "detector_first_dns_alert_at": detector_first_dns_alert_at,
             "detector_first_recovery_at": detector_first_recovery_at,
@@ -135,6 +148,8 @@ def build_rows(target: Path, include_warmups: bool, *, use_cache: bool = True, p
             "gateway_mac_changed": detector_counts.get("gateway_mac_changed", 0),
             "multiple_gateway_macs_seen": detector_counts.get("multiple_gateway_macs_seen", 0),
             "icmp_redirects_seen": detector_counts.get("icmp_redirects_seen", 0),
+            "rogue_dhcp_server_seen": detector_counts.get("rogue_dhcp_server_seen", 0),
+            "dhcp_binding_conflict_seen": detector_counts.get("dhcp_binding_conflict_seen", 0),
             "domain_resolution_changed": count_detector_events(
                 detector_records,
                 {"domain_resolution_changed"},
@@ -198,8 +213,9 @@ def write_dataset(rows: list[dict[str, Any]], output_dir: Path) -> tuple[Path, P
     return csv_path, json_path
 
 
-def clear_plot_outputs(output_dir: Path) -> None:
+def clear_report_outputs(output_dir: Path) -> None:
     if not output_dir.exists():
         return
-    for path in output_dir.rglob("*.png"):
-        path.unlink()
+    for pattern in ("*.png", "table-*.csv", "experiment-report.md"):
+        for path in output_dir.glob(pattern):
+            path.unlink()

@@ -193,6 +193,85 @@ gateway_upstream_ip() {
   printf '%s\n' "$ip"
 }
 
+lab_mac_for_host() {
+  local host="$1"
+
+  case "$host" in
+    gateway)
+      printf '%s\n' "${GATEWAY_LAB_MAC}"
+      ;;
+    victim)
+      printf '%s\n' "${VICTIM_MAC}"
+      ;;
+    attacker)
+      printf '%s\n' "${ATTACKER_MAC}"
+      ;;
+    *)
+      warn "Unknown lab host for MAC lookup: ${host}"
+      return 1
+      ;;
+  esac
+}
+
+query_gateway_dnsmasq_lease_ip_by_mac() {
+  local mac="$1"
+
+  ensure_automation_ssh_key
+
+  local key addr
+  key="$(automation_private_key)"
+  addr="$(gateway_upstream_ip)"
+
+  ssh \
+    -i "$key" \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR \
+    -o BatchMode=yes \
+    -o ConnectTimeout=5 \
+    "${LAB_USER}@${addr}" \
+    "sudo python3 - '${mac,,}' <<'PY'
+from pathlib import Path
+import sys
+
+mac = sys.argv[1].lower()
+for candidate in (Path('/var/lib/misc/dnsmasq.leases'), Path('/var/lib/dhcp/dnsmasq.leases')):
+    if not candidate.exists():
+        continue
+    for raw_line in candidate.read_text(encoding='utf-8', errors='replace').splitlines():
+        parts = raw_line.split()
+        if len(parts) >= 3 and parts[1].lower() == mac:
+            print(parts[2])
+            raise SystemExit(0)
+PY" 2>/dev/null || true
+}
+
+lab_guest_ip() {
+  local host="$1"
+  local mac ip attempts delay try
+
+  mac="$(lab_mac_for_host "$host")"
+  attempts="${LAB_GUEST_IP_LOOKUP_ATTEMPTS:-20}"
+  delay="${LAB_GUEST_IP_LOOKUP_DELAY_SECONDS:-3}"
+
+  for ((try = 1; try <= attempts; try++)); do
+    ip="$(query_gateway_dnsmasq_lease_ip_by_mac "${mac}")"
+    if [[ -n "${ip}" ]]; then
+      printf '%s\n' "${ip}"
+      return 0
+    fi
+    if (( try < attempts )) && (( try == 1 || try == attempts - 1 || try % 4 == 0 )); then
+      info "Waiting for ${host} DHCP lease on the lab switch (${try}/${attempts})"
+    fi
+    if (( try < attempts )); then
+      sleep "${delay}"
+    fi
+  done
+
+  warn "Could not determine current DHCP lease for ${host}"
+  return 1
+}
+
 lab_host_ip() {
   local host="$1"
 
@@ -201,10 +280,10 @@ lab_host_ip() {
       gateway_upstream_ip
       ;;
     victim)
-      cidr_addr "${VICTIM_CIDR}"
+      lab_guest_ip victim
       ;;
     attacker)
-      cidr_addr "${ATTACKER_CIDR}"
+      lab_guest_ip attacker
       ;;
     *)
       warn "Unknown lab host: ${host}"
@@ -220,6 +299,7 @@ lab_ssh() {
   ensure_automation_ssh_key
 
   local key addr gateway_ip proxy_cmd
+  local connect_timeout="${LAB_SSH_CONNECT_TIMEOUT:-10}"
   key="$(automation_private_key)"
   addr="$(lab_host_ip "$host")"
   local ssh_args=(
@@ -228,7 +308,7 @@ lab_ssh() {
     -o UserKnownHostsFile=/dev/null
     -o LogLevel=ERROR
     -o BatchMode=yes
-    -o ConnectTimeout=5
+    -o ConnectTimeout="${connect_timeout}"
   )
 
   if [[ "$host" == "gateway" ]]; then
@@ -237,8 +317,8 @@ lab_ssh() {
   fi
 
   gateway_ip="$(gateway_upstream_ip)"
-  printf -v proxy_cmd 'ssh -i %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=5 -W %%h:%%p %q' \
-    "$key" "${LAB_USER}@${gateway_ip}"
+  printf -v proxy_cmd 'ssh -i %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=%q -W %%h:%%p %q' \
+    "$key" "${connect_timeout}" "${LAB_USER}@${gateway_ip}"
   ssh "${ssh_args[@]}" -o "ProxyCommand=${proxy_cmd}" "${LAB_USER}@${addr}" "$@"
 }
 
@@ -250,6 +330,7 @@ lab_scp_from() {
   ensure_automation_ssh_key
 
   local key addr gateway_ip proxy_cmd
+  local connect_timeout="${LAB_SSH_CONNECT_TIMEOUT:-10}"
   key="$(automation_private_key)"
   addr="$(lab_host_ip "$host")"
   local scp_args=(
@@ -259,7 +340,7 @@ lab_scp_from() {
     -o UserKnownHostsFile=/dev/null
     -o LogLevel=ERROR
     -o BatchMode=yes
-    -o ConnectTimeout=5
+    -o ConnectTimeout="${connect_timeout}"
   )
 
   if [[ "$host" == "gateway" ]]; then
@@ -268,8 +349,8 @@ lab_scp_from() {
   fi
 
   gateway_ip="$(gateway_upstream_ip)"
-  printf -v proxy_cmd 'ssh -i %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=5 -W %%h:%%p %q' \
-    "$key" "${LAB_USER}@${gateway_ip}"
+  printf -v proxy_cmd 'ssh -i %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=%q -W %%h:%%p %q' \
+    "$key" "${connect_timeout}" "${LAB_USER}@${gateway_ip}"
   scp "${scp_args[@]}" -o "ProxyCommand=${proxy_cmd}" "${LAB_USER}@${addr}:${remote_path}" "${local_path}"
 }
 
@@ -281,6 +362,7 @@ lab_scp_to() {
   ensure_automation_ssh_key
 
   local key addr gateway_ip proxy_cmd
+  local connect_timeout="${LAB_SSH_CONNECT_TIMEOUT:-10}"
   key="$(automation_private_key)"
   addr="$(lab_host_ip "$host")"
   local scp_args=(
@@ -290,7 +372,7 @@ lab_scp_to() {
     -o UserKnownHostsFile=/dev/null
     -o LogLevel=ERROR
     -o BatchMode=yes
-    -o ConnectTimeout=5
+    -o ConnectTimeout="${connect_timeout}"
   )
 
   if [[ "$host" == "gateway" ]]; then
@@ -299,8 +381,8 @@ lab_scp_to() {
   fi
 
   gateway_ip="$(gateway_upstream_ip)"
-  printf -v proxy_cmd 'ssh -i %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=5 -W %%h:%%p %q' \
-    "$key" "${LAB_USER}@${gateway_ip}"
+  printf -v proxy_cmd 'ssh -i %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=%q -W %%h:%%p %q' \
+    "$key" "${connect_timeout}" "${LAB_USER}@${gateway_ip}"
   scp "${scp_args[@]}" -o "ProxyCommand=${proxy_cmd}" "${local_path}" "${LAB_USER}@${addr}:${remote_path}"
 }
 

@@ -130,7 +130,7 @@ Report generation split by concern:
 Detector runtime code:
 
 - `live.py`
-  - the deployed detector runtime used on the victim VM
+  - the deployed detector runtime used on the mirrored switch sensor port
 
 ### `python/mitm/`
 
@@ -163,9 +163,9 @@ A typical full workflow looks like this:
    - provisions networks, storage, guests, and cloud-init artifacts
 2. `make experiment-plan` or `make experiment-plan-extra`
    - runs timed scenario windows and stores artifacts under `results/`
-3. `make experiment-report` or `make experiment-report-extra`
-   - builds dataset exports, figures, tables, and the markdown report
-4. `results/experiment-report/` or `results/experiment-report-extra/`
+3. `make experiment-report`
+   - builds dataset exports, figures, tables, and the markdown report from all retained runs
+4. `results/experiment-report/`
    - holds the generated outputs
 
 The generated markdown report now includes the main run-level confusion summary directly, so the normal analysis path does not depend on a separate top-level evaluation make target.

@@ -33,6 +33,13 @@ The main evaluation keeps the core five-scenario matrix:
 - `mitigation-recovery`
   - attack followed by victim-side restoration of the legitimate gateway MAC
 
+A focused verification-only scenario also exists outside the core matrix:
+
+- `dhcp-spoof`
+- `intermittent-dhcp-spoof`
+- `dhcp-offer-only`
+  - dedicated rogue DHCP advertisement validation for the detector and switch-truth path
+
 Canonical command:
 
 ```bash
@@ -67,7 +74,7 @@ make experiment-plan-extra
 Typical report build:
 
 ```bash
-make experiment-report-extra
+make experiment-report
 ```
 
 ## Run Counts
@@ -116,6 +123,8 @@ The generated reports focus on:
   - `iperf3` throughput
 
 Timing comparisons between detector, Zeek, and Suricata use the first supported ground-truth attack evidence for each tool rather than the nominal planned attack start.
+
+When packet capture is enabled, the preferred observed-wire basis is the mirrored switch capture on `results/<run>/pcap/sensor.pcap`. That keeps detector evaluation tied to raw packets from the switch view instead of the detector's own emitted events.
 
 The full metric definition page is [Evaluation Metrics](./evaluation-metrics.md).
 
@@ -170,11 +179,14 @@ Single-scenario commands:
 make scenario-arp-poison-no-forward
 make scenario-arp-mitm-forward
 make scenario-arp-mitm-dns
+make scenario-dhcp-spoof
+make scenario-intermittent-dhcp-spoof
+make scenario-dhcp-offer-only
 make scenario-mitigation-recovery
 ```
 
 Live capture helper:
 
 ```bash
-make demo-capture HOST=victim IFACE=vnic0 FILTER="arp or icmp or port 53"
+make demo-capture HOST=sensor IFACE=mitm-sensor0 FILTER="arp or icmp or port 53 or port 67 or port 68"
 ```

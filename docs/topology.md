@@ -8,42 +8,49 @@ This page documents the lab architecture used by the automated experiments.
 flowchart LR
     subgraph Host["Host machine"]
         Orchestration["shell/ + python/\norchestration and report scripts"]
+        Detector["Detector\nhost-side on mitm-sensor0"]
         Results["results/\nrun artifacts and reports"]
-        SampleReports["make experiment-report\nmake experiment-report-extra\nmake demo-report"]
+        SampleReports["make experiment-report\nmake demo-report"]
     end
 
     subgraph DefaultNet["libvirt default NAT network"]
         DefaultBridge["default"]
     end
 
-    subgraph LabNet["isolated lab network\nmitm-lab on virbr11"]
-        Bridge["virbr11"]
+    subgraph LabNet["isolated lab network\nOpen vSwitch br-mitm-lab"]
+        Switch["br-mitm-lab"]
+        SensorPort["mirror port\nmitm-sensor0"]
 
         subgraph Gateway["mitm-gateway\n10.20.20.1"]
-            GwDNS["dnsmasq + forwarding"]
+            GwDNS["dnsmasq + forwarding\nDHCP service"]
             GwCapture["gateway pcap\noptional"]
         end
 
-        subgraph Victim["mitm-victim\n10.20.20.10"]
-            Detector["Detector\n/usr/local/bin/mitm_lab_detector.py"]
-            Zeek["Zeek comparator\noptional"]
-            Suricata["Suricata comparator\noptional"]
+        subgraph Victim["mitm-victim\nDHCP lease"]
             VictimCapture["victim pcap\noptional"]
         end
 
-        subgraph Attacker["mitm-attacker\n10.20.20.66"]
+        subgraph Attacker["mitm-attacker\nDHCP lease"]
             AttackScripts["python -m mitm.cli\nscenario actions"]
             AttackerCapture["attacker pcap\noptional"]
         end
+
+        Zeek["Zeek comparator\nhost-side on mitm-sensor0"]
+        Suricata["Suricata comparator\nhost-side on mitm-sensor0"]
     end
 
     Orchestration --> Gateway
     Orchestration --> Victim
     Orchestration --> Attacker
+    Orchestration --> Detector
     Gateway --> DefaultBridge
-    Gateway --> Bridge
-    Victim --> Bridge
-    Attacker --> Bridge
+    Gateway --> Switch
+    Victim --> Switch
+    Attacker --> Switch
+    Switch --> SensorPort
+    SensorPort --> Detector
+    SensorPort --> Zeek
+    SensorPort --> Suricata
 
     Detector --> Results
     Zeek --> Results
@@ -59,31 +66,35 @@ flowchart LR
 
 - Host machine:
   - provisions and starts the VMs
+  - owns the Open vSwitch fabric and mirror port
+  - runs the main detector on `mitm-sensor0`
+  - runs Zeek and Suricata comparators on `mitm-sensor0` when enabled
+  - captures `pcap/sensor.pcap` as the preferred wire-truth source when `PCAP_ENABLE=1`
   - orchestrates scenario runs
   - collects artifacts into `results/`
   - builds the main and supplementary reports
 - `mitm-gateway`:
-  - provides the lab gateway and DNS service
+  - provides the lab gateway, DNS service, and DHCP pool
+  - is treated as the trusted DHCP server on the switch-facing LAN
   - can produce gateway-side pcap when `PCAP_ENABLE=1`
 - `mitm-victim`:
-  - runs the main detector
-  - optionally runs Zeek and Suricata
-  - is the main observation point for detector logs and comparator logs
+  - receives its lab address over DHCP from the gateway
 - `mitm-attacker`:
   - runs the automated attack-side scenario commands
+  - discovers the victim host from the lab LAN during the normal automated attack path
+  - receives its lab address over DHCP from the gateway
   - can produce attacker-side pcap when `PCAP_ENABLE=1`
 
 ## Artifact Placement
 
 - detector logs and detector explanation:
-  - `results/<run>/victim/`
+  - `results/<run>/detector/`
 - Zeek comparator artifacts:
-  - `results/<run>/zeek/`
+  - `results/<run>/zeek/host/`
 - Suricata comparator artifacts:
-  - `results/<run>/suricata/`
+  - `results/<run>/suricata/host/`
 - optional pcap artifacts:
   - `results/<run>/pcap/`
 - generated reports:
   - `results/experiment-report/`
-  - `results/experiment-report-extra/`
   - `results/demo-report/`

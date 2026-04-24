@@ -21,8 +21,7 @@ remove_path() {
 
 warn "This will destroy the MITM lab VMs, disks, networks, storage pool, and generated files."
 warn "It will remove ${STORAGE_ROOT} and ${GENERATED_ROOT}."
-read -r -p "Type DESTROY to continue: " answer
-[[ "$answer" == "DESTROY" ]] || { warn "Teardown aborted"; exit 1; }
+info "Proceeding with lab teardown without interactive confirmation"
 
 for vm in "${GATEWAY_NAME}" "${VICTIM_NAME}" "${ATTACKER_NAME}"; do
   if run_hypervisor virsh -c "${LIBVIRT_URI}" dominfo "$vm" >/dev/null 2>&1; then
@@ -35,13 +34,13 @@ for vm in "${GATEWAY_NAME}" "${VICTIM_NAME}" "${ATTACKER_NAME}"; do
   fi
 done
 
-for net in "${LAB_NAME}" default; do
+for net in default "${LAB_NAME}"; do
   if run_hypervisor virsh -c "${LIBVIRT_URI}" net-info "$net" >/dev/null 2>&1; then
     PERSISTENT="$(
       run_hypervisor virsh -c "${LIBVIRT_URI}" net-info "$net" \
         | awk '/^Persistent:/ {print $2}'
     )"
-    if run_hypervisor virsh -c "${LIBVIRT_URI}" net-info "$net" | grep -q '^Active:.*yes'; then
+    if run_hypervisor virsh -c "${LIBVIRT_URI}" net-info "$net" | grep -Eiq '^Active:\s+yes'; then
       info "Destroying network $net"
       run_hypervisor virsh -c "${LIBVIRT_URI}" net-destroy "$net" || true
     fi
@@ -53,6 +52,12 @@ for net in "${LAB_NAME}" default; do
     fi
   fi
 done
+
+if command -v ovs-vsctl >/dev/null 2>&1 && run_root ovs-vsctl br-exists "${LAB_SWITCH_BRIDGE}" >/dev/null 2>&1; then
+  info "Removing Open vSwitch bridge ${LAB_SWITCH_BRIDGE}"
+  run_root ovs-vsctl --if-exists clear Bridge "${LAB_SWITCH_BRIDGE}" mirrors || true
+  run_root ovs-vsctl del-br "${LAB_SWITCH_BRIDGE}" || true
+fi
 
 for disk in \
   "$(vm_disk_path "${GATEWAY_NAME}")" \
@@ -70,12 +75,12 @@ if [[ -z "${POOL_NAME}" ]] && run_hypervisor virsh -c "${LIBVIRT_URI}" pool-info
 fi
 
 if [[ -n "${POOL_NAME}" ]] && run_hypervisor virsh -c "${LIBVIRT_URI}" pool-info "${POOL_NAME}" >/dev/null 2>&1; then
-  if run_hypervisor virsh -c "${LIBVIRT_URI}" pool-info "${POOL_NAME}" | grep -q '^State:.*running'; then
+  if run_hypervisor virsh -c "${LIBVIRT_URI}" pool-info "${POOL_NAME}" | grep -Eiq '^State:\s+running'; then
     info "Destroying storage pool ${POOL_NAME}"
     run_hypervisor virsh -c "${LIBVIRT_URI}" pool-destroy "${POOL_NAME}" || true
     sleep 1
   fi
-  if run_hypervisor virsh -c "${LIBVIRT_URI}" pool-info "${POOL_NAME}" | grep -q '^State:.*running'; then
+  if run_hypervisor virsh -c "${LIBVIRT_URI}" pool-info "${POOL_NAME}" | grep -Eiq '^State:\s+running'; then
     warn "Storage pool ${POOL_NAME} is still active after destroy; skipping undefine for now"
   else
     info "Undefining storage pool ${POOL_NAME}"

@@ -6,12 +6,12 @@ from pathlib import Path
 from reporting.builder import ExperimentReportBuilder, ReportBuildOptions
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build diploma experiment datasets, figures, and tables.")
+    parser = argparse.ArgumentParser(description="Build one combined experiment report from the runs under a results directory.")
     parser.add_argument("target", nargs="?", default="results", help="Run directory or results root")
     parser.add_argument("--output-dir", default="results/experiment-report", help="Directory for CSV, JSON, plots, and markdown")
     parser.add_argument("--include-warmups", action="store_true", help="Include warm-up runs in exports and plots")
     parser.add_argument("--no-cache", action="store_true", help="Recompute per-run evaluations instead of reusing valid evaluation.json caches")
-    parser.add_argument("--profile", choices=["main", "supplementary", "all"], default="main", help="Report profile to build")
+    parser.add_argument("--profile", choices=["main", "supplementary", "all"], default="all", help="Subset of scenarios to include")
     parser.add_argument("--max-runs-per-scenario", type=int, default=None, help="Keep at most this many measured runs per scenario, preferring the latest run ids")
     return parser.parse_args()
 

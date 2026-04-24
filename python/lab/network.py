@@ -83,10 +83,17 @@ def resolve_mac(ip: str, interface: str, timeout: float = 2.0) -> str | None:
     return None
 
 
-def scan_subnet(subnet: str, interface: str, timeout: float = 2.0) -> list[HostRecord]:
+def scan_subnet(
+    subnet: str,
+    interface: str,
+    timeout: float = 1.0,
+    inter: float = 0.0,
+) -> list[HostRecord]:
     require_scapy()
     packet = Ether(dst=BROADCAST_MAC) / ARP(pdst=subnet)
-    answered, _ = srp(packet, iface=interface, timeout=timeout, inter=0.2, verbose=False)
+    # A subnet-wide ARP sweep should burst quickly; a per-packet 0.2s gap makes a /24
+    # take roughly 50 seconds and prevents the attacker from reaching the actual MITM phase.
+    answered, _ = srp(packet, iface=interface, timeout=timeout, inter=inter, verbose=False)
     hosts = [
         HostRecord(ip=response.psrc, mac=response.hwsrc.lower())
         for _, response in answered
@@ -100,3 +107,15 @@ def ipv4_forwarding_enabled() -> bool:
 
 def set_ipv4_forwarding(enabled: bool) -> None:
     IP_FORWARD_PATH.write_text("1\n" if enabled else "0\n", encoding="utf-8")
+
+
+def send_redirects_path(scope: str) -> Path:
+    return Path(f"/proc/sys/net/ipv4/conf/{scope}/send_redirects")
+
+
+def send_redirects_enabled(scope: str) -> bool:
+    return send_redirects_path(scope).read_text(encoding="utf-8").strip() == "1"
+
+
+def set_send_redirects(enabled: bool, scope: str) -> None:
+    send_redirects_path(scope).write_text("1\n" if enabled else "0\n", encoding="utf-8")

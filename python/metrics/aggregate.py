@@ -51,64 +51,30 @@ def event_recall_summary(
     sensor_field: str,
     coverage_field: str,
 ) -> dict[str, Any]:
-    all_truth = sum(total_events(evaluation.ground_truth_attack_types) for evaluation in evaluations)
+    all_truth = sum(total_events(evaluation.ground_truth_attacker_action_types) for evaluation in evaluations)
     all_matched = sum(
-        matched_events(evaluation.ground_truth_attack_types, getattr(evaluation, sensor_field))
-        for evaluation in evaluations
-    )
-    supported_truth = sum(
-        total_events(
-            evaluation.ground_truth_attack_types,
-            allowed_types=[attack_type for attack_type, enabled in getattr(evaluation, coverage_field).items() if enabled],
-        )
-        for evaluation in evaluations
-    )
-    supported_matched = sum(
-        matched_events(
-            evaluation.ground_truth_attack_types,
-            getattr(evaluation, sensor_field),
-            allowed_types=[attack_type for attack_type, enabled in getattr(evaluation, coverage_field).items() if enabled],
-        )
+        matched_events(evaluation.ground_truth_attacker_action_types, getattr(evaluation, sensor_field))
         for evaluation in evaluations
     )
     by_attack_type: dict[str, dict[str, float | int]] = {}
     for attack_type in ATTACK_TYPE_ORDER:
-        truth = sum(evaluation.ground_truth_attack_types.get(attack_type, 0) for evaluation in evaluations)
+        truth = sum(evaluation.ground_truth_attacker_action_types.get(attack_type, 0) for evaluation in evaluations)
         matched = sum(
             min(
-                evaluation.ground_truth_attack_types.get(attack_type, 0),
+                evaluation.ground_truth_attacker_action_types.get(attack_type, 0),
                 getattr(evaluation, sensor_field).get(attack_type, 0),
             )
             for evaluation in evaluations
-        )
-        supported_truth_for_type = sum(
-            evaluation.ground_truth_attack_types.get(attack_type, 0)
-            for evaluation in evaluations
-            if getattr(evaluation, coverage_field).get(attack_type, False)
-        )
-        supported_matched_for_type = sum(
-            min(
-                evaluation.ground_truth_attack_types.get(attack_type, 0),
-                getattr(evaluation, sensor_field).get(attack_type, 0),
-            )
-            for evaluation in evaluations
-            if getattr(evaluation, coverage_field).get(attack_type, False)
         )
         by_attack_type[attack_type] = {
             "matched_events": matched,
             "ground_truth_events": truth,
             "recall": safe_divide(matched, truth),
-            "supported_ground_truth_events": supported_truth_for_type,
-            "supported_matched_events": supported_matched_for_type,
-            "supported_recall": safe_divide(supported_matched_for_type, supported_truth_for_type),
         }
     return {
         "matched_events": all_matched,
         "ground_truth_events": all_truth,
         "recall": safe_divide(all_matched, all_truth),
-        "supported_matched_events": supported_matched,
-        "supported_ground_truth_events": supported_truth,
-        "supported_recall": safe_divide(supported_matched, supported_truth),
         "by_attack_type": by_attack_type,
     }
 
@@ -204,25 +170,21 @@ def event_recall(
 ) -> float | None:
     sensor_counts = getattr(evaluation, sensor_field)
     allowed_types = [attack_type for attack_type in ATTACK_TYPE_ORDER if (coverage.get(attack_type, False) or not supported_only)]
-    truth = total_events(evaluation.ground_truth_attack_types, allowed_types=allowed_types)
+    truth = total_events(evaluation.ground_truth_attacker_action_types, allowed_types=allowed_types)
     if truth == 0:
         return None
-    matched = matched_events(evaluation.ground_truth_attack_types, sensor_counts, allowed_types=allowed_types)
+    matched = matched_events(evaluation.ground_truth_attacker_action_types, sensor_counts, allowed_types=allowed_types)
     return safe_divide(matched, truth)
 
 
 def render_single(evaluation: RunEvaluation) -> str:
-    attack_count_label = "Ground truth attack packets" if evaluation.ground_truth_source in {"switch_pcap", "victim_pcap"} else "Ground truth attack events"
-    observed_count_label = "Ground truth observed wire packets" if evaluation.ground_truth_source in {"switch_pcap", "victim_pcap"} else "Ground truth observed wire events"
     lines = [
         f"Run: {evaluation.run_id}",
         f"Scenario: {evaluation.scenario}",
         f"Ground truth attack present: {evaluation.attack_present}",
-        f"Ground truth source: {evaluation.ground_truth_source}",
         f"Ground truth total events: {evaluation.ground_truth_total_events}",
-        f"{attack_count_label}: {evaluation.ground_truth_attack_events}",
+        f"Ground truth attack packets: {evaluation.ground_truth_attack_events}",
         f"Ground truth attacker action events: {evaluation.ground_truth_attacker_action_events}",
-        f"{observed_count_label}: {evaluation.ground_truth_observed_wire_events}",
         f"Ground truth control events: {evaluation.ground_truth_control_events}",
         f"Ground truth attack types: {json.dumps(evaluation.ground_truth_attack_types, sort_keys=True)}",
         f"Ground truth attack type first seen at: {json.dumps(evaluation.ground_truth_attack_type_first_seen_at, sort_keys=True)}",
@@ -232,7 +194,6 @@ def render_single(evaluation: RunEvaluation) -> str:
         f"Ground truth attack type durations (s): {json.dumps(evaluation.ground_truth_attack_type_durations_seconds, sort_keys=True)}",
         f"Ground truth attack type packet rates (pps): {json.dumps(evaluation.ground_truth_attack_type_packet_rates_pps, sort_keys=True)}",
         f"Ground truth attacker action types: {json.dumps(evaluation.ground_truth_attacker_action_types, sort_keys=True)}",
-        f"Ground truth observed wire types: {json.dumps(evaluation.ground_truth_observed_wire_types, sort_keys=True)}",
         f"Ground truth control types: {json.dumps(evaluation.ground_truth_control_types, sort_keys=True)}",
         f"Ground truth DNS query count: {evaluation.ground_truth_dns_query_count}",
         f"Ground truth DNS spoof success ratio: {evaluation.ground_truth_dns_spoof_success_ratio if evaluation.ground_truth_dns_spoof_success_ratio is not None else 'n/a'}",
@@ -245,8 +206,6 @@ def render_single(evaluation: RunEvaluation) -> str:
         f"Detector canonical attack types: {json.dumps(evaluation.detector_attack_type_counts, sort_keys=True)}",
         f"Detector first alert at: {evaluation.detector_first_alert_at or 'n/a'}",
         f"Detector raw first signal offset from attack start (s): {evaluation.detector_ttd_seconds if evaluation.detector_ttd_seconds is not None else 'n/a'}",
-        f"Detector supported attack started at: {evaluation.detector_supported_attack_started_at or 'n/a'}",
-        f"Detector comparison-basis first signal offset (s): {evaluation.detector_supported_ttd_seconds if evaluation.detector_supported_ttd_seconds is not None else 'n/a'}",
         f"Detector type recall: {supported_type_recall(evaluation, 'detector_attack_type_counts', evaluation.detector_coverage)}",
         f"Detector event recall: {event_recall(evaluation, 'detector_attack_type_counts', evaluation.detector_coverage)}",
         f"Zeek alert events: {evaluation.zeek_alert_events}",
@@ -255,38 +214,29 @@ def render_single(evaluation: RunEvaluation) -> str:
         f"Zeek canonical attack types: {json.dumps(evaluation.zeek_attack_type_counts, sort_keys=True)}",
         f"Zeek first alert at: {evaluation.zeek_first_alert_at or 'n/a'}",
         f"Zeek raw first signal offset from attack start (s): {evaluation.zeek_ttd_seconds if evaluation.zeek_ttd_seconds is not None else 'n/a'}",
-        f"Zeek supported attack started at: {evaluation.zeek_supported_attack_started_at or 'n/a'}",
-        f"Zeek comparison-basis first signal offset (s): {evaluation.zeek_supported_ttd_seconds if evaluation.zeek_supported_ttd_seconds is not None else 'n/a'}",
         f"Zeek type recall: {supported_type_recall(evaluation, 'zeek_attack_type_counts', evaluation.zeek_coverage)}",
         f"Zeek event recall: {event_recall(evaluation, 'zeek_attack_type_counts', evaluation.zeek_coverage)}",
-        f"Zeek coverage: {json.dumps(evaluation.zeek_coverage, sort_keys=True)}",
         f"Suricata alert events: {evaluation.suricata_alert_events}",
         f"Suricata unique alert signatures: {evaluation.suricata_unique_alert_type_count}",
         f"Suricata alert signatures: {json.dumps(evaluation.suricata_alert_types, sort_keys=True)}",
         f"Suricata canonical attack types: {json.dumps(evaluation.suricata_attack_type_counts, sort_keys=True)}",
         f"Suricata first alert at: {evaluation.suricata_first_alert_at or 'n/a'}",
         f"Suricata raw first signal offset from attack start (s): {evaluation.suricata_ttd_seconds if evaluation.suricata_ttd_seconds is not None else 'n/a'}",
-        f"Suricata supported attack started at: {evaluation.suricata_supported_attack_started_at or 'n/a'}",
-        f"Suricata comparison-basis first signal offset (s): {evaluation.suricata_supported_ttd_seconds if evaluation.suricata_supported_ttd_seconds is not None else 'n/a'}",
         f"Suricata type recall: {supported_type_recall(evaluation, 'suricata_attack_type_counts', evaluation.suricata_coverage)}",
-        f"Suricata event recall: {event_recall(evaluation, 'suricata_attack_type_counts', evaluation.suricata_coverage, supported_only=True)}",
-        f"Suricata supported event recall: {event_recall(evaluation, 'suricata_attack_type_counts', evaluation.suricata_coverage, supported_only=True)}",
-        f"Suricata coverage: {json.dumps(evaluation.suricata_coverage, sort_keys=True)}",
-        "Note: run-level alert presence and attack-type/event coverage are reported separately because a single alert in a multi-stage run should not be treated as perfect coverage.",
-        "Timing note: comparison-basis TTD starts from the first ground-truth attack evidence the sensor actually covers; raw attack-start TTD is kept only for chronology.",
+        f"Suricata event recall: {event_recall(evaluation, 'suricata_attack_type_counts', evaluation.suricata_coverage)}",
     ]
     return "\n".join(lines)
 
 
 def render_multi(payload: dict[str, Any]) -> str:
     lines = [
-        "Run | Scenario | Truth | GT Attack Events | Detector Alerts | Zeek Alerts | Suricata Alerts | Detector Type Recall | Zeek Type Recall | Suricata Type Recall | Detector Comparison TTD(s) | Zeek Comparison TTD(s) | Suricata Comparison TTD(s)",
+        "Run | Scenario | Truth | GT Action Events | Detector Alerts | Zeek Alerts | Suricata Alerts | Detector Type Recall | Zeek Type Recall | Suricata Type Recall | Detector TTD(s) | Zeek TTD(s) | Suricata TTD(s)",
         "--- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---",
     ]
     for item in payload["runs"]:
-        detector_allowed = [attack_type for attack_type in ATTACK_TYPE_ORDER if item["detector_coverage"].get(attack_type, False)]
-        zeek_allowed = [attack_type for attack_type in ATTACK_TYPE_ORDER if item["zeek_coverage"].get(attack_type, False)]
-        suricata_allowed = [attack_type for attack_type in ATTACK_TYPE_ORDER if item["suricata_coverage"].get(attack_type, False)]
+        detector_allowed = ATTACK_TYPE_ORDER
+        zeek_allowed = ATTACK_TYPE_ORDER
+        suricata_allowed = ATTACK_TYPE_ORDER
         detector_type_recall = safe_divide(
             sum(1 for attack_type in detector_allowed if item["ground_truth_attack_types"].get(attack_type, 0) > 0 and item["detector_attack_type_counts"].get(attack_type, 0) > 0),
             sum(1 for attack_type in detector_allowed if item["ground_truth_attack_types"].get(attack_type, 0) > 0),
@@ -301,15 +251,13 @@ def render_multi(payload: dict[str, Any]) -> str:
         ) if item["attack_present"] else 0.0
         lines.append(
             f"{item['run_id']} | {item['scenario']} | {item['attack_present']} | "
-            f"{item['ground_truth_attack_events']} | {item['detector_alert_events']} | {item['zeek_alert_events']} | "
+            f"{item['ground_truth_attacker_action_events']} | {item['detector_alert_events']} | {item['zeek_alert_events']} | "
             f"{item['suricata_alert_events']} | {detector_type_recall:.3f} | {zeek_type_recall:.3f} | {suricata_type_recall:.3f} | "
-            f"{item['detector_supported_ttd_seconds']} | {item['zeek_supported_ttd_seconds']} | {item['suricata_supported_ttd_seconds']}"
+            f"{item['detector_ttd_seconds']} | {item['zeek_ttd_seconds']} | {item['suricata_ttd_seconds']}"
         )
 
     lines.extend(
         [
-            "",
-            "Note: run-level confusion below only answers whether a run produced any alert. Attack-type confusion and event recall are capability-aware, so unsupported attack types are excluded for tools such as Suricata on ARP spoof.",
             "",
             "Run-level detection confusion:",
             "Detector:",

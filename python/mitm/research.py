@@ -5,7 +5,7 @@ from ipaddress import ip_address
 
 from lab.config import LabSettings
 from lab.network import HostRecord, interface_ipv4, interface_on_subnet, scan_subnet
-from mitm.attacks import ArpPoisoner, DnsSpoofer, RogueDhcpServer
+from mitm.attacks import ArpPoisoner, DhcpStarvationClient, DnsSpoofer, RogueDhcpServer
 
 
 class LabResearchRunner:
@@ -123,4 +123,26 @@ class LabResearchRunner:
             gateway_ip=str(self.settings.gateway_ip),
             interval=interval,
             include_ack=include_ack,
+        )
+
+    def build_dhcp_starvation_client(
+        self,
+        server_ip: str | None = None,
+        mac_prefix: str | None = None,
+        interval: float = 0.2,
+        request_timeout: float = 5.0,
+        worker_count: int = 4,
+        release_on_exit: bool = True,
+    ) -> DhcpStarvationClient:
+        selected_server_ip = server_ip or str(self.settings.gateway_ip)
+        self._validate_host(selected_server_ip)
+        selected_mac_prefix = (mac_prefix or self.settings.raw.get("DHCP_STARVATION_MAC_PREFIX", "02:aa:20")).lower()
+        return DhcpStarvationClient(
+            interface=self.interface,
+            server_ip=selected_server_ip,
+            mac_prefix=selected_mac_prefix,
+            interval=interval,
+            request_timeout=request_timeout,
+            worker_count=worker_count,
+            release_on_exit=release_on_exit,
         )

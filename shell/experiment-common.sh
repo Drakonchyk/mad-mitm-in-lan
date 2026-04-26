@@ -12,6 +12,13 @@ PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE:-0}"
 ZEEK_ENABLE="${ZEEK_ENABLE:-1}"
 SURICATA_ENABLE="${SURICATA_ENABLE:-1}"
 DETECTOR_PACKET_SAMPLE_RATE="${DETECTOR_PACKET_SAMPLE_RATE:-1}"
+SENSOR_VISIBILITY_PERCENT="${SENSOR_VISIBILITY_PERCENT:-100}"
+DHCP_STARVATION_WORKERS="${DHCP_STARVATION_WORKERS:-}"
+ROGUE_DHCP_START_OFFSET_SECONDS="${ROGUE_DHCP_START_OFFSET_SECONDS:-}"
+ROGUE_DHCP_OFFERED_IP="${ROGUE_DHCP_OFFERED_IP:-}"
+TAKEOVER_ENABLE="${TAKEOVER_ENABLE:-1}"
+VISIBILITY_TX_IFACE="${VISIBILITY_TX_IFACE:-mitm-vis-tx}"
+VISIBILITY_RX_IFACE="${VISIBILITY_RX_IFACE:-mitm-vis-rx}"
 DETECTOR_HEARTBEAT_SECONDS="${DETECTOR_HEARTBEAT_SECONDS:-10}"
 KEEP_DEBUG_ARTIFACTS="${KEEP_DEBUG_ARTIFACTS:-0}"
 ZEEK_ACTIVE=0
@@ -20,6 +27,8 @@ SURICATA_ARP_RULE_ACTIVE=0
 SURICATA_ARP_RULE_MODE="disabled"
 SURICATA_ARP_RULE_NOTE=""
 PCAP_ACTIVE=0
+VISIBILITY_ACTIVE=0
+EFFECTIVE_SENSOR_PORT="${LAB_SWITCH_SENSOR_PORT}"
 
 lab_python_module() {
   PYTHONPATH="${LAB_DIR}/python${PYTHONPATH:+:${PYTHONPATH}}" python3 -m "$@"
@@ -41,6 +50,27 @@ host_python_with_scapy() {
   done
 
   return 1
+}
+
+visibility_percent() {
+  local value="${SENSOR_VISIBILITY_PERCENT}"
+  if ! [[ "${value}" =~ ^[0-9]+$ ]]; then
+    warn "Invalid SENSOR_VISIBILITY_PERCENT=${value}; using 100"
+    printf '100\n'
+    return 0
+  fi
+  if (( value < 0 )); then
+    value=0
+  elif (( value > 100 )); then
+    value=100
+  fi
+  printf '%s\n' "${value}"
+}
+
+visibility_degradation_requested() {
+  local percent
+  percent="$(visibility_percent)"
+  (( percent < 100 ))
 }
 
 require_experiment_tools() {
@@ -119,12 +149,14 @@ render_victim_suricata_rules() {
   local arp_rule_mode="${3:-arp}"
   local attacker_ip victim_ip gateway_ip a b c d attacker_ip_hex
   local attacker_mac attacker_mac_hex gateway_ip_hex victim_ip_hex
-  local m1 m2 m3 m4 m5 m6
+  local starvation_mac_prefix starvation_mac_prefix_hex
+  local m1 m2 m3 m4 m5 m6 p1 p2 p3
 
   attacker_ip="$(lab_host_ip attacker)"
   victim_ip="$(lab_host_ip victim)"
   gateway_ip="${GATEWAY_IP}"
   attacker_mac="${ATTACKER_MAC,,}"
+  starvation_mac_prefix="${DHCP_STARVATION_MAC_PREFIX,,}"
   IFS=. read -r a b c d <<< "${attacker_ip}"
   printf -v attacker_ip_hex '|%02X %02X %02X %02X|' "${a}" "${b}" "${c}" "${d}"
   IFS=. read -r a b c d <<< "${gateway_ip}"
@@ -134,6 +166,9 @@ render_victim_suricata_rules() {
   IFS=: read -r m1 m2 m3 m4 m5 m6 <<< "${attacker_mac}"
   printf -v attacker_mac_hex '|%s %s %s %s %s %s|' \
     "${m1^^}" "${m2^^}" "${m3^^}" "${m4^^}" "${m5^^}" "${m6^^}"
+  IFS=: read -r p1 p2 p3 <<< "${starvation_mac_prefix}"
+  printf -v starvation_mac_prefix_hex '|%s %s %s|' \
+    "${p1^^}" "${p2^^}" "${p3^^}"
 
   {
     if [[ "${include_arp}" == "1" ]]; then
@@ -155,6 +190,8 @@ render_victim_suricata_rules() {
 alert icmp ${attacker_ip} any -> ${victim_ip} any (msg:"MITM-LAB live ICMP redirect from attacker to victim"; itype:5; classtype:attempted-admin; sid:9901001; rev:1;)
 alert udp ${gateway_ip} 53 -> ${victim_ip} any (msg:"MITM-LAB live DNS answer contains attacker IP"; content:"${attacker_ip_hex}"; classtype:bad-unknown; sid:9901002; rev:1;)
 alert udp ${attacker_ip} 67 -> any 68 (msg:"MITM-LAB live rogue DHCP reply from attacker"; content:"|63 82 53 63|"; offset:236; depth:4; classtype:bad-unknown; sid:9901003; rev:1;)
+alert udp any 68 -> any 67 (msg:"MITM-LAB live DHCP starvation discover from spoofed client prefix"; content:"${starvation_mac_prefix_hex}"; offset:28; depth:3; content:"|63 82 53 63 35 01 01|"; offset:236; depth:7; classtype:attempted-dos; sid:9901004; rev:2;)
+alert udp any 68 -> any 67 (msg:"MITM-LAB live DHCP starvation request from spoofed client prefix"; content:"${starvation_mac_prefix_hex}"; offset:28; depth:3; content:"|63 82 53 63 35 01 03|"; offset:236; depth:7; classtype:attempted-dos; sid:9901005; rev:2;)
 EOF
   } > "${outfile}"
 }
@@ -177,7 +214,7 @@ prepare_victim_detector() {
     return 1
   fi
 
-  info "Starting detector on the mirrored switch sensor port ${LAB_SWITCH_SENSOR_PORT} with ${host_python}"
+  info "Starting detector on sensor interface ${EFFECTIVE_SENSOR_PORT} with ${host_python}"
   run_root install -m 0755 "${rendered_detector}" "${detector_path}"
   run_root bash -lc "
     if test -f '${pid_path}'; then
@@ -189,7 +226,7 @@ prepare_victim_detector() {
     fi
     rm -f '${log_path}' '${state_path}' '${pid_path}' '${stdout_path}' '${stderr_path}'
     nohup env \
-      MITM_LAB_INTERFACE='${LAB_SWITCH_SENSOR_PORT}' \
+      MITM_LAB_INTERFACE='${EFFECTIVE_SENSOR_PORT}' \
       MITM_LAB_LOG_PATH='${log_path}' \
       MITM_LAB_STATE_PATH='${state_path}' \
       MITM_LAB_EXPECTED_GATEWAY_MAC='${GATEWAY_LAB_MAC,,}' \
@@ -197,6 +234,7 @@ prepare_victim_detector() {
       MITM_LAB_EXPECTED_DHCP_SERVER_MAC='${GATEWAY_LAB_MAC,,}' \
       MITM_LAB_VICTIM_MAC='${VICTIM_MAC,,}' \
       MITM_LAB_ATTACKER_MAC='${ATTACKER_MAC,,}' \
+      MITM_LAB_DHCP_STARVATION_MAC_PREFIX='${DHCP_STARVATION_MAC_PREFIX,,}' \
       MITM_LAB_PACKET_SAMPLE_RATE='${DETECTOR_PACKET_SAMPLE_RATE}' \
       MITM_LAB_HEARTBEAT_SECONDS='${DETECTOR_HEARTBEAT_SECONDS}' \
       '${host_python}' '${detector_path}' >'${stdout_path}' 2>'${stderr_path}' </dev/null &
@@ -326,7 +364,7 @@ prepare_victim_zeek() {
     return 0
   fi
 
-  info "Starting live Zeek comparison sensor on host switch port ${LAB_SWITCH_SENSOR_PORT}"
+  info "Starting live Zeek comparison sensor on ${EFFECTIVE_SENSOR_PORT}"
   run_root bash -lc "
     if test -f '${pid_path}'; then
       pid=\$(cat '${pid_path}' 2>/dev/null || true)
@@ -340,7 +378,7 @@ prepare_victim_zeek() {
   "
   run_root install -m 0644 "${rendered_policy}" "${policy_path}"
   run_root bash -lc "
-    nohup '${zeek_bin}' -C -i '${LAB_SWITCH_SENSOR_PORT}' 'Log::default_logdir=${log_dir}' '${policy_path}' >'${stdout_path}' 2>'${stderr_path}' </dev/null &
+    nohup '${zeek_bin}' -C -i '${EFFECTIVE_SENSOR_PORT}' 'Log::default_logdir=${log_dir}' '${policy_path}' >'${stdout_path}' 2>'${stderr_path}' </dev/null &
     echo \$! > '${pid_path}'
   "
 
@@ -436,9 +474,9 @@ prepare_victim_suricata() {
     fi
   fi
 
-  info "Starting live Suricata comparison sensor on host switch port ${LAB_SWITCH_SENSOR_PORT}"
+  info "Starting live Suricata comparison sensor on ${EFFECTIVE_SENSOR_PORT}"
   run_root bash -lc "
-    nohup '${suricata_bin}' -i '${LAB_SWITCH_SENSOR_PORT}' -l '${log_dir}' -c '/etc/suricata/suricata.yaml' ${suricata_start_opts} -S '${rules_path}' >'${stdout_path}' 2>'${stderr_path}' </dev/null &
+    nohup '${suricata_bin}' -i '${EFFECTIVE_SENSOR_PORT}' -l '${log_dir}' -c '/etc/suricata/suricata.yaml' ${suricata_start_opts} -S '${rules_path}' >'${stdout_path}' 2>'${stderr_path}' </dev/null &
     echo \$! > '${pid_path}'
   "
 
@@ -449,6 +487,100 @@ prepare_victim_suricata() {
   fi
 
   rm -f "${rendered_rules}"
+}
+
+prepare_visibility_sensor() {
+  local percent host_python shim_path stats_path pid_path stdout_path stderr_path
+
+  percent="$(visibility_percent)"
+  EFFECTIVE_SENSOR_PORT="${LAB_SWITCH_SENSOR_PORT}"
+  VISIBILITY_ACTIVE=0
+
+  if (( percent >= 100 )); then
+    return 0
+  fi
+
+  if ! host_python="$(host_python_with_scapy)"; then
+    warn "Visibility degradation needs host Python with Scapy; falling back to full visibility"
+    return 0
+  fi
+
+  shim_path="${LAB_DIR}/shell/tools/visibility-shim.py"
+  stats_path="/tmp/mitm-lab-visibility-shim.json"
+  pid_path="/tmp/mitm-lab-visibility-shim.pid"
+  stdout_path="/tmp/mitm-lab-visibility-shim.stdout"
+  stderr_path="/tmp/mitm-lab-visibility-shim.stderr"
+
+  info "Starting live sensor visibility shim: ${LAB_SWITCH_SENSOR_PORT} -> ${VISIBILITY_RX_IFACE} at ${percent}%"
+  run_root bash -lc "
+    set -euo pipefail
+    if test -f '${pid_path}'; then
+      pid=\$(cat '${pid_path}' 2>/dev/null || true)
+      if [[ -n \"\${pid}\" ]]; then
+        kill -TERM \"\${pid}\" 2>/dev/null || true
+        sleep 1
+      fi
+    fi
+    ip link del '${VISIBILITY_TX_IFACE}' 2>/dev/null || true
+    ip link add '${VISIBILITY_TX_IFACE}' type veth peer name '${VISIBILITY_RX_IFACE}'
+    ip link set '${VISIBILITY_TX_IFACE}' up
+    ip link set '${VISIBILITY_RX_IFACE}' up
+    ip link set '${VISIBILITY_TX_IFACE}' promisc on
+    ip link set '${VISIBILITY_RX_IFACE}' promisc on
+    rm -f '${stats_path}' '${pid_path}' '${stdout_path}' '${stderr_path}'
+    nohup '${host_python}' '${shim_path}' \
+      --input '${LAB_SWITCH_SENSOR_PORT}' \
+      --output '${VISIBILITY_TX_IFACE}' \
+      --visibility '${percent}' \
+      --stats '${stats_path}' \
+      >'${stdout_path}' 2>'${stderr_path}' </dev/null &
+    echo \$! > '${pid_path}'
+  "
+
+  if run_root bash -lc "pid=\$(cat '${pid_path}' 2>/dev/null || true); [[ -n \"\${pid}\" ]] && kill -0 \"\${pid}\" 2>/dev/null"; then
+    EFFECTIVE_SENSOR_PORT="${VISIBILITY_RX_IFACE}"
+    VISIBILITY_ACTIVE=1
+  else
+    warn "Visibility shim did not stay up; falling back to full visibility"
+    run_root ip link del "${VISIBILITY_TX_IFACE}" >/dev/null 2>&1 || true
+  fi
+}
+
+stop_visibility_sensor() {
+  local pid_path="/tmp/mitm-lab-visibility-shim.pid"
+
+  if [[ "${VISIBILITY_ACTIVE:-0}" != "1" ]]; then
+    return 0
+  fi
+
+  run_root bash -lc "
+    if test -f '${pid_path}'; then
+      pid=\$(cat '${pid_path}' 2>/dev/null || true)
+      if [[ -n \"\${pid}\" ]]; then
+        kill -TERM \"\${pid}\" 2>/dev/null || true
+        for _ in 1 2 3 4 5; do
+          if ! kill -0 \"\${pid}\" 2>/dev/null; then
+            break
+          fi
+          sleep 1
+        done
+        if kill -0 \"\${pid}\" 2>/dev/null; then
+          kill -KILL \"\${pid}\" 2>/dev/null || true
+        fi
+      fi
+    fi
+    ip link del '${VISIBILITY_TX_IFACE}' 2>/dev/null || true
+  " >/dev/null 2>&1 || true
+}
+
+capture_visibility_stats() {
+  capture_local_command "${RUN_DIR}/detector/visibility-shim-final.json" "
+    if test -f /tmp/mitm-lab-visibility-shim.json; then
+      cat /tmp/mitm-lab-visibility-shim.json
+    else
+      printf '{}\n'
+    fi
+  "
 }
 
 prime_victim_detector_domains() {
@@ -563,7 +695,7 @@ json_bool() {
 
 should_keep_run_pcaps() {
   case "${PCAP_RETENTION_POLICY}" in
-    all)
+    all|keep)
       return 0
       ;;
     none)
@@ -579,10 +711,16 @@ should_keep_run_pcaps() {
       return 1
       ;;
     first-run-per-scenario)
-      if [[ -n "${PLAN_RUN_INDEX:-}" && "${PLAN_RUN_INDEX}" =~ ^[0-9]+$ && "${PLAN_RUN_INDEX}" -eq 1 ]]; then
-        return 0
+      if find "$(results_root)" -maxdepth 3 \
+        -path "${RUN_DIR}" -prune -o \
+        -type f \( \
+          -path "*-${RUN_BASE_SLUG:-${RUN_SLUG}}/pcap/sensor.pcap" -o \
+          -path "*-${RUN_BASE_SLUG:-${RUN_SLUG}}-param-*/pcap/sensor.pcap" \
+        \) -print -quit \
+        | grep -q .; then
+        return 1
       fi
-      return 1
+      return 0
       ;;
     *)
       warn "Unknown PCAP_RETENTION_POLICY value: ${PCAP_RETENTION_POLICY}; keeping pcaps"
@@ -642,13 +780,19 @@ scenario_slug() {
 
 prepare_run_dir() {
   local scenario="$1"
-  local run_id slug
+  local run_id base_slug slug suffix
 
   run_id="$(date -u +%Y%m%dT%H%M%SZ)"
-  slug="$(scenario_slug "$scenario")"
+  base_slug="$(scenario_slug "$scenario")"
+  suffix="$(scenario_slug "${RUN_SLUG_SUFFIX:-}")"
+  slug="${base_slug}"
+  if [[ -n "${suffix}" ]]; then
+    slug="${slug}-${suffix}"
+  fi
 
   RUN_ID="${run_id}"
   RUN_SCENARIO="${scenario}"
+  RUN_BASE_SLUG="${base_slug}"
   RUN_SLUG="${slug}"
   RUN_DIR="$(results_root)/${RUN_ID}-${RUN_SLUG}"
   PCAP_ACTIVE=0
@@ -723,8 +867,22 @@ write_run_meta() {
   "ended_at": "${ended_at}",
   "capture_packet_count": ${CAPTURE_PACKET_COUNT},
   "pcap_retention_policy": "$(json_escape "${PCAP_RETENTION_POLICY}")",
+  "pcap_requested": $(json_bool "${PCAP_ENABLE}"),
+  "guest_pcap_requested": $(json_bool "${GUEST_PCAP_ENABLE}"),
+  "pcap_summaries_requested": $(json_bool "${PCAP_SUMMARIES_ENABLE}"),
   "detector_placement": "switch-sensor-port",
-  "detector_interface": "${LAB_SWITCH_SENSOR_PORT}",
+  "detector_interface": "${EFFECTIVE_SENSOR_PORT}",
+  "truth_interface": "${LAB_SWITCH_SENSOR_PORT}",
+  "sensor_visibility_percent": $(visibility_percent),
+  "sensor_visibility_active": $(json_bool "${VISIBILITY_ACTIVE:-0}"),
+  "sensor_visibility_model": "live deterministic packet thinning before Detector, Zeek, and Suricata",
+  "dhcp_starvation_workers": $(json_number_or_null "${DHCP_STARVATION_WORKERS}"),
+  "dhcp_starvation_worker_model": "number of parallel DHCP starvation worker threads in the attacker client",
+  "rogue_dhcp_start_offset_seconds": $(json_number_or_null "${ROGUE_DHCP_START_OFFSET_SECONDS}"),
+  "rogue_dhcp_offered_ip": "$(json_escape "${ROGUE_DHCP_OFFERED_IP}")",
+  "takeover_enabled": $(json_bool "${TAKEOVER_ENABLE}"),
+  "takeover_start_mode": "$(json_escape "${TAKEOVER_START_MODE:-fixed}")",
+  "takeover_renew_delay_seconds": $(json_number_or_null "${TAKEOVER_RENEW_DELAY_SECONDS:-}"),
   "lab_switch_bridge": "${LAB_SWITCH_BRIDGE}",
   "lab_switch_mirror": "${LAB_SWITCH_MIRROR}",
   "gateway_upstream_ip": "$(gateway_upstream_ip)",
@@ -752,6 +910,125 @@ write_run_meta() {
   "notes": "$(json_escape "${notes}")",
   "domains": "$(json_escape "${DETECTOR_DOMAINS}")"
 }
+EOF
+}
+
+dhcp_lease_snapshot_cmd() {
+  cat <<EOF
+sudo python3 - '${VICTIM_MAC,,}' '${ATTACKER_MAC,,}' '${DHCP_STARVATION_MAC_PREFIX,,}' '${LAB_DHCP_RANGE_START}' '${LAB_DHCP_RANGE_END}' <<'PY'
+from datetime import datetime, timezone
+from ipaddress import ip_address
+import json
+from pathlib import Path
+import sys
+
+victim_mac = sys.argv[1].lower()
+attacker_mac = sys.argv[2].lower()
+starvation_prefix = sys.argv[3].lower()
+range_start = ip_address(sys.argv[4])
+range_end = ip_address(sys.argv[5])
+pool_total = int(range_end) - int(range_start) + 1
+
+leases = []
+for candidate in (Path('/var/lib/misc/dnsmasq.leases'), Path('/var/lib/dhcp/dnsmasq.leases')):
+    if not candidate.exists():
+        continue
+    for raw_line in candidate.read_text(encoding='utf-8', errors='replace').splitlines():
+        parts = raw_line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            lease_ip = ip_address(parts[2])
+        except ValueError:
+            continue
+        if not (range_start <= lease_ip <= range_end):
+            continue
+        leases.append({
+            'expiry': parts[0],
+            'mac': parts[1].lower(),
+            'ip': str(lease_ip),
+            'hostname': parts[3] if len(parts) >= 4 else '',
+        })
+
+attack_leases = [lease for lease in leases if lease['mac'].startswith(starvation_prefix)]
+payload = {
+    'ts': datetime.now(timezone.utc).isoformat(),
+    'pool_total': pool_total,
+    'taken': len(leases),
+    'attack_taken': len(attack_leases),
+    'normal_taken': len(leases) - len(attack_leases),
+    'free': pool_total - len(leases),
+    'victim_ip': next((lease['ip'] for lease in leases if lease['mac'] == victim_mac), ''),
+    'attacker_ip': next((lease['ip'] for lease in leases if lease['mac'] == attacker_mac), ''),
+    'attack_ips': [lease['ip'] for lease in attack_leases],
+}
+print(json.dumps(payload, sort_keys=True))
+PY
+EOF
+}
+
+dhcp_lease_monitor_cmd() {
+  local duration="${1:-60}"
+  local interval="${2:-1}"
+  cat <<EOF
+python3 - '${VICTIM_MAC,,}' '${ATTACKER_MAC,,}' '${DHCP_STARVATION_MAC_PREFIX,,}' '${LAB_DHCP_RANGE_START}' '${LAB_DHCP_RANGE_END}' '${duration}' '${interval}' <<'PY'
+from datetime import datetime, timezone
+from ipaddress import ip_address
+import json
+from pathlib import Path
+import sys
+import time
+
+victim_mac = sys.argv[1].lower()
+attacker_mac = sys.argv[2].lower()
+starvation_prefix = sys.argv[3].lower()
+range_start = ip_address(sys.argv[4])
+range_end = ip_address(sys.argv[5])
+duration = float(sys.argv[6])
+interval = max(float(sys.argv[7]), 0.2)
+pool_total = int(range_end) - int(range_start) + 1
+
+def snapshot():
+    leases = []
+    for candidate in (Path('/var/lib/misc/dnsmasq.leases'), Path('/var/lib/dhcp/dnsmasq.leases')):
+        if not candidate.exists():
+            continue
+        for raw_line in candidate.read_text(encoding='utf-8', errors='replace').splitlines():
+            parts = raw_line.split()
+            if len(parts) < 3:
+                continue
+            try:
+                lease_ip = ip_address(parts[2])
+            except ValueError:
+                continue
+            if not (range_start <= lease_ip <= range_end):
+                continue
+            leases.append({
+                'expiry': parts[0],
+                'mac': parts[1].lower(),
+                'ip': str(lease_ip),
+                'hostname': parts[3] if len(parts) >= 4 else '',
+            })
+    attack_leases = [lease for lease in leases if lease['mac'].startswith(starvation_prefix)]
+    return {
+        'ts': datetime.now(timezone.utc).isoformat(),
+        'pool_total': pool_total,
+        'taken': len(leases),
+        'attack_taken': len(attack_leases),
+        'normal_taken': len(leases) - len(attack_leases),
+        'free': pool_total - len(leases),
+        'victim_ip': next((lease['ip'] for lease in leases if lease['mac'] == victim_mac), ''),
+        'attacker_ip': next((lease['ip'] for lease in leases if lease['mac'] == attacker_mac), ''),
+        'attack_ips': [lease['ip'] for lease in attack_leases],
+    }
+
+deadline = time.time() + duration
+while True:
+    print(json.dumps(snapshot(), sort_keys=True), flush=True)
+    if time.time() >= deadline:
+        break
+    time.sleep(interval)
+PY
 EOF
 }
 
@@ -1035,6 +1312,15 @@ fetch_remote_file() {
   fi
 }
 
+fetch_optional_remote_file() {
+  local host="$1"
+  local remote_path="$2"
+  local local_path="$3"
+
+  remote_file_exists "$host" "$remote_path" || return 0
+  lab_scp_from "$host" "$remote_path" "$local_path" >/dev/null 2>&1 || return 0
+}
+
 remote_file_exists() {
   local host="$1"
   local remote_path="$2"
@@ -1074,7 +1360,7 @@ start_remote_background_job() {
   stderr_file="${remote_base}.stderr"
   printf -v quoted_cmd '%q' "$cmd"
 
-  if [[ "${host}" == "attacker" ]]; then
+  if [[ "${host}" == "attacker" && "${label}" == "${ATTACK_JOB_LABEL:-scenario-job}" ]]; then
     remote_sudo_bash_lc "$host" \
       "pkill -f 'python3 -m mitm\\.cli' 2>/dev/null || true; pkill -f 'timeout -s INT .*python3 -m mitm\\.cli' 2>/dev/null || true" \
       >/dev/null 2>&1 || true
@@ -1123,10 +1409,19 @@ save_common_state() {
   capture_remote_command gateway "${RUN_DIR}/gateway/dnsmasq-service.txt" "systemctl status dnsmasq --no-pager || true"
   capture_local_command "${RUN_DIR}/detector/status.txt" "
     echo 'generated_at='\"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
-    echo 'detector_interface=${LAB_SWITCH_SENSOR_PORT}'
+    echo 'detector_interface=${EFFECTIVE_SENSOR_PORT}'
+    echo 'truth_interface=${LAB_SWITCH_SENSOR_PORT}'
+    echo 'sensor_visibility_percent=$(visibility_percent)'
+    echo 'sensor_visibility_active=${VISIBILITY_ACTIVE:-0}'
+    echo 'dhcp_starvation_workers=${DHCP_STARVATION_WORKERS}'
     echo 'detector_log=/tmp/mitm-lab-detector-host.jsonl'
     echo 'detector_state=/tmp/mitm-lab-detector-host-state.json'
     echo 'switch_truth_pcap=/tmp/${RUN_ID}-${RUN_SLUG}-sensor.pcap'
+    if test -f /tmp/mitm-lab-visibility-shim.json; then
+      echo
+      echo '== visibility shim =='
+      cat /tmp/mitm-lab-visibility-shim.json
+    fi
     echo
     if test -f /tmp/mitm-lab-detector-host.pid; then
       pid=\$(cat /tmp/mitm-lab-detector-host.pid 2>/dev/null || true)
@@ -1140,7 +1435,10 @@ save_common_state() {
   "
   capture_local_command "${RUN_DIR}/zeek/status-runtime.txt" "
     echo 'generated_at='\"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
-    echo 'sensor_interface=${LAB_SWITCH_SENSOR_PORT}'
+    echo 'sensor_interface=${EFFECTIVE_SENSOR_PORT}'
+    echo 'truth_interface=${LAB_SWITCH_SENSOR_PORT}'
+    echo 'sensor_visibility_percent=$(visibility_percent)'
+    echo 'dhcp_starvation_workers=${DHCP_STARVATION_WORKERS}'
     echo 'runtime_root=/tmp/mitm-lab-zeek-host'
     echo 'log_dir=/tmp/mitm-lab-zeek-host/current'
     echo
@@ -1154,7 +1452,10 @@ save_common_state() {
   "
   capture_local_command "${RUN_DIR}/suricata/status-runtime.txt" "
     echo 'generated_at='\"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
-    echo 'sensor_interface=${LAB_SWITCH_SENSOR_PORT}'
+    echo 'sensor_interface=${EFFECTIVE_SENSOR_PORT}'
+    echo 'truth_interface=${LAB_SWITCH_SENSOR_PORT}'
+    echo 'sensor_visibility_percent=$(visibility_percent)'
+    echo 'dhcp_starvation_workers=${DHCP_STARVATION_WORKERS}'
     echo 'runtime_root=/tmp/mitm-lab-suricata-host'
     echo 'log_dir=/tmp/mitm-lab-suricata-host/current'
     echo 'arp_rule_enabled=${SURICATA_ARP_RULE_ACTIVE:-0}'
@@ -1281,15 +1582,19 @@ save_capture_files() {
     return 0
   fi
 
-  capture_local_delta "/tmp/${RUN_ID}-${RUN_SLUG}-sensor.pcap" 0 "${RUN_DIR}/pcap/sensor.pcap"
-  if guest_pcaps_requested; then
-    fetch_remote_file gateway "/tmp/${RUN_ID}-${RUN_SLUG}-gateway.pcap" "${RUN_DIR}/pcap/gateway.pcap" || true
-    fetch_remote_file victim "/tmp/${RUN_ID}-${RUN_SLUG}-victim.pcap" "${RUN_DIR}/pcap/victim.pcap" || true
-    fetch_remote_file attacker "/tmp/${RUN_ID}-${RUN_SLUG}-attacker.pcap" "${RUN_DIR}/pcap/attacker.pcap" || true
+  local sensor_pcap="/tmp/${RUN_ID}-${RUN_SLUG}-sensor.pcap"
+  if should_keep_run_pcaps; then
+    capture_local_delta "${sensor_pcap}" 0 "${RUN_DIR}/pcap/sensor.pcap"
+  elif [[ -s "${sensor_pcap}" ]]; then
+    ln -s "${sensor_pcap}" "${RUN_DIR}/pcap/sensor.pcap"
   fi
-  if remote_file_exists gateway "/tmp/${RUN_ID}-${RUN_SLUG}-iperf-server.log"; then
-    fetch_remote_file gateway "/tmp/${RUN_ID}-${RUN_SLUG}-iperf-server.log" "${RUN_DIR}/gateway/iperf-server.log" || true
+
+  if should_keep_run_pcaps && guest_pcaps_requested; then
+    fetch_optional_remote_file gateway "/tmp/${RUN_ID}-${RUN_SLUG}-gateway.pcap" "${RUN_DIR}/pcap/gateway.pcap"
+    fetch_optional_remote_file victim "/tmp/${RUN_ID}-${RUN_SLUG}-victim.pcap" "${RUN_DIR}/pcap/victim.pcap"
+    fetch_optional_remote_file attacker "/tmp/${RUN_ID}-${RUN_SLUG}-attacker.pcap" "${RUN_DIR}/pcap/attacker.pcap"
   fi
+  fetch_optional_remote_file gateway "/tmp/${RUN_ID}-${RUN_SLUG}-iperf-server.log" "${RUN_DIR}/gateway/iperf-server.log"
 }
 
 write_tshark_summary() {
@@ -1527,9 +1832,6 @@ prune_run_artifacts() {
     "${RUN_DIR}/attacker/ip-neigh.txt" \
     "${RUN_DIR}/attacker/ip-neigh-after.txt" \
     "${RUN_DIR}/attacker/versions.txt" \
-    "${RUN_DIR}/attacker/"*.command.txt \
-    "${RUN_DIR}/attacker/"*.stdout \
-    "${RUN_DIR}/attacker/"*.stderr \
     "${RUN_DIR}/zeek/status-runtime.txt" \
     "${RUN_DIR}/zeek/host/runtime-status.txt" \
     "${RUN_DIR}/zeek/host/zeek.stdout" \

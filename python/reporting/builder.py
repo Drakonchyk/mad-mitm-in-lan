@@ -8,22 +8,12 @@ from reporting.dataset import build_rows, clear_report_outputs, limit_rows_per_s
 from reporting.markdown import write_markdown_summary
 from reporting.plots import build_report_plots
 from reporting.tables import (
-    build_table_arp_replies,
-    build_table_capture_overview,
-    build_table_control_plane_noise,
-    build_table_dns_answers,
-    build_table_icmp_redirects,
-    build_table_noisiest_detector_runs,
-    build_table_operational_summary,
-    build_table_probe_window_domain_observations,
-    build_table_representative_context,
-    build_table_representative_first_alerts,
-    build_table_scenario_summary,
-    build_table_timing_summary,
-    build_table_top_conversations,
-    build_table_tool_by_scenario,
-    build_table_tool_overall,
-    build_table_wire_truth_summary,
+    build_table_thesis_detector_semantics,
+    build_table_thesis_main_detection,
+    build_table_thesis_recovery_timing,
+    build_table_thesis_starvation_scaling,
+    build_table_thesis_supplementary_detection,
+    build_table_thesis_visibility_thresholds,
 )
 
 
@@ -62,22 +52,12 @@ class ExperimentReportBuilder:
 
     def build_tables(self, rows: list[dict[str, Any]]) -> dict[str, Path]:
         builders = [
-            ("Results Overview / Scenario Summary", build_table_scenario_summary),
-            ("Detection And Timing / Timing Summary", build_table_timing_summary),
-            ("Operational Impact / Operational Summary", build_table_operational_summary),
-            ("Additional Summary / Tool Overall", build_table_tool_overall),
-            ("Additional Summary / Tool By Scenario", build_table_tool_by_scenario),
-            ("Additional Summary / Wire-Truth Summary", build_table_wire_truth_summary),
-            ("Additional Summary / Control-Plane Noise", build_table_control_plane_noise),
-            ("Representative Run / Context", build_table_representative_context),
-            ("Representative Run / First Alerts", build_table_representative_first_alerts),
-            ("Representative Run / Probe-Window Domain Observations", build_table_probe_window_domain_observations),
-            ("Detector Event Forensics / Noisiest Detector Runs", build_table_noisiest_detector_runs),
-            ("PCAP Forensics / Capture Overview", build_table_capture_overview),
-            ("PCAP Forensics / Top Conversations", build_table_top_conversations),
-            ("PCAP Forensics / ARP Replies", build_table_arp_replies),
-            ("PCAP Forensics / DNS Answers", build_table_dns_answers),
-            ("PCAP Forensics / ICMP Redirects", build_table_icmp_redirects),
+            ("Thesis Tables / Main Detection And Timing", build_table_thesis_main_detection),
+            ("Thesis Tables / Supplementary Campaign Summary", build_table_thesis_supplementary_detection),
+            ("Thesis Tables / Detector Semantic Coverage", build_table_thesis_detector_semantics),
+            ("Thesis Tables / Visibility Thresholds", build_table_thesis_visibility_thresholds),
+            ("Thesis Tables / DHCP Starvation Scaling", build_table_thesis_starvation_scaling),
+            ("Thesis Tables / Recovery Timing", build_table_thesis_recovery_timing),
         ]
         tables: dict[str, Path] = {}
         for title, builder in builders:

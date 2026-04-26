@@ -1,18 +1,4 @@
-.PHONY: scenario-help scenario-verify scenario-arp-poison-no-forward scenario-arp-mitm-forward scenario-arp-mitm-dns scenario-dhcp-spoof scenario-intermittent-dhcp-spoof scenario-dhcp-offer-only scenario-mitigation-recovery scenario-compare
-
-scenario-help:
-	@printf '%s\n' \
-		'Scenario Commands' \
-		'' \
-		'  make scenario-verify' \
-		'  make scenario-arp-poison-no-forward DURATION=90' \
-		'  make scenario-arp-mitm-forward DURATION=90' \
-		'  make scenario-arp-mitm-dns DURATION=90' \
-		'  make scenario-dhcp-spoof DURATION=60' \
-		'  make scenario-intermittent-dhcp-spoof DURATION=90' \
-		'  make scenario-dhcp-offer-only DURATION=60' \
-		'  make scenario-mitigation-recovery DURATION=120' \
-		'  make scenario-compare TARGET=results'
+.PHONY: scenario-verify scenario-arp-poison-no-forward scenario-arp-mitm-forward scenario-arp-mitm-dns scenario-dhcp-spoof scenario-dhcp-starvation scenario-dhcp-starvation-rogue-dhcp scenario-visibility-arp-mitm-dns scenario-visibility-dhcp-spoof scenario-mitigation-recovery
 
 scenario-verify:
 	./shell/scenarios/verify-isolated-lab.sh
@@ -29,14 +15,17 @@ scenario-arp-mitm-dns:
 scenario-dhcp-spoof:
 	./shell/scenarios/record-dhcp-spoof.sh "$(or $(DURATION),60)"
 
-scenario-intermittent-dhcp-spoof:
-	./shell/scenarios/record-intermittent-dhcp-spoof.sh "$(or $(DURATION),90)"
+scenario-dhcp-starvation:
+	./shell/scenarios/record-dhcp-starvation.sh "$(or $(DURATION),60)" "$(or $(WORKERS),1)"
 
-scenario-dhcp-offer-only:
-	./shell/scenarios/record-dhcp-offer-only.sh "$(or $(DURATION),60)"
+scenario-dhcp-starvation-rogue-dhcp:
+	./shell/scenarios/record-dhcp-starvation-rogue-dhcp.sh "$(or $(DURATION),90)" "$(or $(WORKERS),1)" "$(or $(TAKEOVER),1)"
+
+scenario-visibility-arp-mitm-dns:
+	./shell/scenarios/record-visibility-arp-mitm-dns.sh "$(or $(DURATION),90)" "$(or $(VISIBILITY),100)"
+
+scenario-visibility-dhcp-spoof:
+	./shell/scenarios/record-visibility-dhcp-spoof.sh "$(or $(DURATION),60)" "$(or $(VISIBILITY),100)"
 
 scenario-mitigation-recovery:
 	./shell/scenarios/record-mitigation-recovery.sh "$(or $(DURATION),120)"
-
-scenario-compare:
-	./shell/scenarios/compare-runs.sh "$(or $(TARGET),results)"

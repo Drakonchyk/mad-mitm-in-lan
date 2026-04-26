@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from ipaddress import ip_address, ip_network
 from pathlib import Path
 
-from scapy.all import ARP, BOOTP, DHCP, DNS, DNSQR, DNSRR, Ether, ICMP, IP, UDP, sniff
+from scapy.all import ARP, BOOTP, DHCP, DNS, DNSQR, DNSRR, Ether, ICMP, IP, UDP, PcapReader, sniff
 
 GATEWAY_IP = "__GATEWAY_IP__"
 DNS_SERVER = "__DNS_SERVER__"
@@ -22,6 +22,7 @@ DOMAINS = [__PYTHON_DOMAIN_LIST__]
 INTERFACE = os.getenv("MITM_LAB_INTERFACE", "vnic0")
 LOG_PATH = Path(os.getenv("MITM_LAB_LOG_PATH", "/var/log/mitm-lab-detector.jsonl"))
 STATE_PATH = Path(os.getenv("MITM_LAB_STATE_PATH", "/var/lib/mitm-lab-detector/state.json"))
+PCAP_PATH = os.getenv("MITM_LAB_PCAP_PATH")
 EXPECTED_GATEWAY_MAC = os.getenv("MITM_LAB_EXPECTED_GATEWAY_MAC")
 EXPECTED_DHCP_SERVER = os.getenv("MITM_LAB_EXPECTED_DHCP_SERVER", GATEWAY_IP)
 EXPECTED_DHCP_SERVER_MAC_RAW = os.getenv("MITM_LAB_EXPECTED_DHCP_SERVER_MAC")
@@ -79,8 +80,12 @@ PACKET_SAMPLE_RATE = max(0.0, min(1.0, getenv_float("MITM_LAB_PACKET_SAMPLE_RATE
 EXPECTED_DHCP_SERVER_MAC = normalize_mac(EXPECTED_DHCP_SERVER_MAC_RAW)
 KNOWN_VICTIM_MAC = normalize_mac(KNOWN_VICTIM_MAC_RAW)
 KNOWN_ATTACKER_MAC = normalize_mac(KNOWN_ATTACKER_MAC_RAW)
+DHCP_STARVATION_MAC_PREFIX = normalize_mac(os.getenv("MITM_LAB_DHCP_STARVATION_MAC_PREFIX", "02:aa:20"))
+DHCP_STARVATION_WINDOW_SECONDS = max(getenv_float("MITM_LAB_DHCP_STARVATION_WINDOW_SECONDS", 15.0), 1.0)
+DHCP_STARVATION_UNIQUE_CLIENT_THRESHOLD = max(int(getenv_float("MITM_LAB_DHCP_STARVATION_UNIQUE_CLIENT_THRESHOLD", 5.0)), 2)
 INITIAL_VICTIM_IP = getenv_ip("MITM_LAB_VICTIM_IP", VICTIM_IP)
 INITIAL_ATTACKER_IP = getenv_ip("MITM_LAB_ATTACKER_IP", ATTACKER_IP)
+EVENT_TS_OVERRIDE: str | None = None
 
 
 def get_gateway_mac_from_neighbor_cache() -> str | None:
@@ -184,6 +189,12 @@ def dhcp_client_identity(packet) -> dict[str, str | None]:
     }
 
 
+def mac_matches_prefix(value: str | None, prefix: str | None) -> bool:
+    if not value or not prefix:
+        return False
+    return normalize_mac(value).startswith(normalize_mac(prefix))
+
+
 def load_state() -> dict:
     if not STATE_PATH.exists():
         return {"domain_baselines": {}, "seen_gateway_macs": [], "seen_dhcp_servers": []}
@@ -236,7 +247,7 @@ def save_state(state) -> None:
 
 def log_event(event_type: str, **payload) -> None:
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    record = {"ts": now(), "event": event_type, **payload}
+    record = {"ts": EVENT_TS_OVERRIDE or now(), "event": event_type, **payload}
     with LOG_PATH.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
 
@@ -264,6 +275,9 @@ class DetectorState:
     dhcp_offer_packets_seen: int = 0
     dhcp_ack_packets_seen: int = 0
     rogue_dhcp_packets_seen: int = 0
+    dhcp_starvation_packets_seen: int = 0
+    dhcp_starvation_active: bool = False
+    recent_dhcp_request_clients: dict[str, float] = field(default_factory=dict)
     packet_sequence: int = 0
     dirty: bool = False
 
@@ -294,6 +308,71 @@ def ensure_gateway_baseline(state: DetectorState) -> None:
     if state.expected_gateway_mac:
         log_event("gateway_baseline_set", expected_gateway_mac=state.expected_gateway_mac)
         state.dirty = True
+
+
+def prune_recent_dhcp_request_clients(state: DetectorState, now_monotonic: float) -> None:
+    expired = [
+        client_mac
+        for client_mac, seen_at in state.recent_dhcp_request_clients.items()
+        if now_monotonic - seen_at > DHCP_STARVATION_WINDOW_SECONDS
+    ]
+    for client_mac in expired:
+        state.recent_dhcp_request_clients.pop(client_mac, None)
+    if state.dhcp_starvation_active and len(state.recent_dhcp_request_clients) < DHCP_STARVATION_UNIQUE_CLIENT_THRESHOLD:
+        log_event(
+            "dhcp_starvation_cleared",
+            unique_client_count=len(state.recent_dhcp_request_clients),
+            window_seconds=DHCP_STARVATION_WINDOW_SECONDS,
+        )
+        state.dhcp_starvation_active = False
+
+
+def handle_dhcp_snooping(packet, state: DetectorState, message_type: str) -> None:
+    if message_type not in {"discover", "request"}:
+        return
+    client = dhcp_client_identity(packet)
+    client_mac = client["client_mac"]
+    if not client_mac:
+        return
+    if client_mac in {KNOWN_VICTIM_MAC, KNOWN_ATTACKER_MAC}:
+        return
+
+    now_monotonic = time.monotonic()
+    prune_recent_dhcp_request_clients(state, now_monotonic)
+    state.recent_dhcp_request_clients[client_mac] = now_monotonic
+
+    unique_client_count = len(state.recent_dhcp_request_clients)
+    suspicious_packet = (
+        mac_matches_prefix(client_mac, DHCP_STARVATION_MAC_PREFIX)
+        or unique_client_count >= DHCP_STARVATION_UNIQUE_CLIENT_THRESHOLD
+    )
+    if not suspicious_packet:
+        return
+
+    state.dhcp_starvation_packets_seen += 1
+    log_event(
+        "dhcp_starvation_packet_seen",
+        message_type=message_type,
+        client_mac=client_mac,
+        unique_client_count=unique_client_count,
+        window_seconds=DHCP_STARVATION_WINDOW_SECONDS,
+        mac_prefix=DHCP_STARVATION_MAC_PREFIX,
+        count=state.dhcp_starvation_packets_seen,
+    )
+    if (
+        unique_client_count >= DHCP_STARVATION_UNIQUE_CLIENT_THRESHOLD
+        and not state.dhcp_starvation_active
+    ):
+        log_event(
+            "dhcp_starvation_seen",
+            message_type=message_type,
+            client_mac=client_mac,
+            unique_client_count=unique_client_count,
+            window_seconds=DHCP_STARVATION_WINDOW_SECONDS,
+            mac_prefix=DHCP_STARVATION_MAC_PREFIX,
+        )
+        state.dhcp_starvation_active = True
+    state.dirty = True
 
 
 def handle_gateway_arp(packet, state: DetectorState) -> None:
@@ -451,6 +530,9 @@ def handle_dhcp(packet, state: DetectorState) -> None:
         return
 
     message_type = dhcp_message_type(packet)
+    if message_type in {"discover", "request"}:
+        handle_dhcp_snooping(packet, state, message_type)
+        return
     if message_type not in {"offer", "ack"}:
         return
 
@@ -568,6 +650,7 @@ def handle_dhcp(packet, state: DetectorState) -> None:
 
 
 def log_heartbeat(state: DetectorState) -> None:
+    prune_recent_dhcp_request_clients(state, time.monotonic())
     log_event(
         "heartbeat",
         expected_gateway_mac=state.expected_gateway_mac,
@@ -587,6 +670,10 @@ def log_heartbeat(state: DetectorState) -> None:
         dhcp_offer_packets_seen=state.dhcp_offer_packets_seen,
         dhcp_ack_packets_seen=state.dhcp_ack_packets_seen,
         rogue_dhcp_packets_seen=state.rogue_dhcp_packets_seen,
+        dhcp_starvation_packets_seen=state.dhcp_starvation_packets_seen,
+        dhcp_starvation_active=state.dhcp_starvation_active,
+        dhcp_starvation_unique_clients=len(state.recent_dhcp_request_clients),
+        dhcp_starvation_mac_prefix=DHCP_STARVATION_MAC_PREFIX,
         packet_sample_rate=PACKET_SAMPLE_RATE,
         domain_mismatch_active={
             domain: state.domain_mismatch_active.get(domain, False)
@@ -615,6 +702,36 @@ def process_packet(packet, state: DetectorState) -> None:
     handle_dhcp(packet, state)
 
 
+def packet_timestamp(packet) -> str | None:
+    try:
+        epoch = float(packet.time)
+    except Exception:
+        return None
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+
+
+def run_offline_pcap(state: DetectorState, pcap_path: str) -> None:
+    global EVENT_TS_OVERRIDE
+
+    processed_packets = 0
+    with PcapReader(pcap_path) as reader:
+        for packet in reader:
+            EVENT_TS_OVERRIDE = packet_timestamp(packet)
+            process_packet(packet, state)
+            processed_packets += 1
+
+    EVENT_TS_OVERRIDE = None
+    if state.dirty:
+        save_state(state)
+        state.dirty = False
+    log_event(
+        "offline_pcap_replay_finished",
+        pcap_path=pcap_path,
+        processed_packets=processed_packets,
+        packet_sample_rate=PACKET_SAMPLE_RATE,
+    )
+
+
 def main() -> None:
     state = build_initial_state()
     ensure_gateway_baseline(state)
@@ -641,6 +758,10 @@ def main() -> None:
         known_attacker_ip=state.known_attacker_ip,
         domain_baselines=state.domain_baselines,
     )
+
+    if PCAP_PATH:
+        run_offline_pcap(state, PCAP_PATH)
+        return
 
     next_heartbeat = time.monotonic() + HEARTBEAT_SECONDS
 

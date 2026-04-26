@@ -19,7 +19,7 @@
         <div class="hero-actions">
           <button class="secondary" data-action="start_lab">Ensure Lab Up</button>
           <button class="secondary" data-action="start_monitoring">Ensure Monitoring</button>
-          <button class="secondary" data-action="stop_monitoring">Stop Monitoring</button>
+          <button class="secondary" data-action="update_report">Update Report</button>
           <button class="secondary" data-action="open_wireshark">Open Wireshark</button>
         </div>
       </header>
@@ -36,7 +36,28 @@
             <input id="durationNumber" type="number" min="5" max="60" value="20">
           </div>
         </div>
+        <div id="visibilityOptions" class="duration-box conditional-controls hidden">
+          <label>Visibility Scenario</label>
+          <div class="radio-row" role="radiogroup" aria-label="Visibility scenario">
+            <label><input type="radio" name="visibilityScenario" value="visibility-arp-mitm-dns" checked> ARP + DNS</label>
+            <label><input type="radio" name="visibilityScenario" value="visibility-dhcp-spoof"> DHCP spoof</label>
+          </div>
+          <label for="visibilityRange">Sensor Visibility</label>
+          <div class="duration-row">
+            <input id="visibilityRange" type="range" min="0" max="100" step="5" value="100">
+            <input id="visibilityNumber" type="number" min="0" max="100" value="100">
+          </div>
+        </div>
+        <div id="takeoverOptions" class="duration-box conditional-controls hidden">
+          <label class="checkbox-row"><input id="takeoverEnabled" type="checkbox" checked> Rogue DHCP takeover</label>
+          <label for="workersRange">Starvation Workers</label>
+          <div class="duration-row">
+            <input id="workersRange" type="range" min="1" max="108" value="1">
+            <input id="workersNumber" type="number" min="1" max="108" value="1">
+          </div>
+        </div>
         <div id="scenarioButtons" class="scenario-grid"></div>
+        <button id="runSelectedScenario" class="run-button" disabled>Run Selected Scenario</button>
       </section>
 
       <section class="status-grid">
@@ -56,6 +77,7 @@
         <article class="panel">
           <div class="panel-header">
             <h2>Last Completed Run</h2>
+            <button id="downloadLatestRun" class="small-action" disabled>Download Run</button>
           </div>
           <div id="latestResult" class="stack compact"></div>
         </article>

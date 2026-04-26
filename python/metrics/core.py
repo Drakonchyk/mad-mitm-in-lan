@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from metrics.model import (
+    ATTACK_TYPE_ORDER,
     DETECTOR_ALERT_EVENTS,
     EVALUATION_CACHE_VERSION,
     EVALUATION_DEPENDENCY_PATHS,
@@ -71,7 +72,7 @@ def seconds_between_timestamps(started_at: str | None, ended_at: str | None) -> 
 
 def attack_type_durations_seconds(epochs_by_type: dict[str, list[str]]) -> dict[str, float | None]:
     durations: dict[str, float | None] = {}
-    for attack_type in ("arp_spoof", "icmp_redirect", "dns_spoof", "dhcp_spoof"):
+    for attack_type in ATTACK_TYPE_ORDER:
         epochs = epochs_by_type.get(attack_type, [])
         if not epochs:
             continue
@@ -97,6 +98,25 @@ def attack_type_packet_rates_pps(
             continue
         rates[attack_type] = count / duration
     return dict(sorted(rates.items()))
+
+
+def action_counts_from_wire_epochs(epochs_by_type: dict[str, list[str]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    arp_total = len(epochs_by_type.get("arp_spoof", []))
+    arp_gateway_to_victim = len(epochs_by_type.get("arp_spoof_gateway_to_victim", []))
+    arp_victim_to_gateway = len(epochs_by_type.get("arp_spoof_victim_to_gateway", []))
+    if arp_gateway_to_victim and arp_victim_to_gateway:
+        counts["arp_spoof"] = min(arp_gateway_to_victim, arp_victim_to_gateway)
+    elif arp_total:
+        counts["arp_spoof"] = (arp_total + 1) // 2
+
+    for attack_type in ATTACK_TYPE_ORDER:
+        if attack_type == "arp_spoof":
+            continue
+        total = len(epochs_by_type.get(attack_type, []))
+        if total:
+            counts[attack_type] = total
+    return dict(sorted(counts.items()))
 
 
 def evaluation_input_paths(run_dir: Path) -> list[Path]:
@@ -136,6 +156,13 @@ def cached_metadata(run_dir: Path) -> dict[str, Any]:
 
 
 def hydrate_run_evaluation(payload: dict[str, Any]) -> RunEvaluation:
+    for tool in ("detector", "zeek", "suricata"):
+        payload.setdefault(f"{tool}_supported_attack_started_at", payload.get("ground_truth_attack_started_at"))
+        payload.setdefault(f"{tool}_supported_ttd_seconds", payload.get(f"{tool}_ttd_seconds"))
+        payload.setdefault(f"{tool}_coverage", dict(SENSOR_COVERAGE[tool]))
+    payload.setdefault("ground_truth_source", "switch_pcap")
+    payload.setdefault("ground_truth_observed_wire_events", payload.get("ground_truth_attack_events", 0))
+    payload.setdefault("ground_truth_observed_wire_types", payload.get("ground_truth_attack_types", {}))
     run_fields = {field.name for field in fields(RunEvaluation)}
     return RunEvaluation(**{name: payload[name] for name in run_fields})
 
@@ -322,7 +349,7 @@ def evaluate_single_run(run_dir: Path) -> RunEvaluation:
     ]
 
     attack_counter, attack_first_seen_at = canonical_ground_truth_counts(relevant_attack_records)
-    attacker_action_counter, _ = canonical_ground_truth_counts(attacker_action_records)
+    attacker_stdout_action_counter, _ = canonical_ground_truth_counts(attacker_action_records)
     observed_counter, _ = canonical_ground_truth_counts(observed_records)
     control_counter = Counter(record.get("event", "unknown") for record in control_records)
     wire_epochs_by_type = observed_wire_attack_epochs_by_type(run_dir, meta, attack_records)
@@ -345,6 +372,8 @@ def evaluate_single_run(run_dir: Path) -> RunEvaluation:
         "gateway_to_victim": len(wire_epochs_by_type.get("arp_spoof_gateway_to_victim", [])),
         "victim_to_gateway": len(wire_epochs_by_type.get("arp_spoof_victim_to_gateway", [])),
     }
+    wire_action_counter = action_counts_from_wire_epochs(wire_epochs_by_type)
+    attacker_action_counter = wire_action_counter if observed_records else attacker_stdout_action_counter
     control_plane_counts = observed_wire_control_plane_packet_counts(run_dir)
     capture_duration_seconds = observed_wire_capture_duration_seconds(run_dir)
     wire_truth_label = observed_wire_source_label(run_dir)
@@ -372,7 +401,7 @@ def evaluate_single_run(run_dir: Path) -> RunEvaluation:
         ground_truth_source=ground_truth_source,
         ground_truth_total_events=len(relevant_attack_records) + len(control_records),
         ground_truth_attack_events=len(relevant_attack_records),
-        ground_truth_attacker_action_events=len(attacker_action_records),
+        ground_truth_attacker_action_events=sum(attacker_action_counter.values()),
         ground_truth_observed_wire_events=len(observed_records),
         ground_truth_control_events=len(control_records),
         ground_truth_attack_started_at=attack_started_at,

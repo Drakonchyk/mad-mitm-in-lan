@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+USER_PCAP_RETENTION_POLICY="${PCAP_RETENTION_POLICY-}"
+USER_PCAP_ENABLE="${PCAP_ENABLE-}"
+USER_GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE-}"
+USER_PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE-}"
+
 # shellcheck source=/dev/null
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../experiment-common.sh"
 
@@ -8,11 +13,12 @@ EXPERIMENT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 WARMUP_RUNS="${WARMUP_RUNS:-1}"
 MEASURED_RUNS="${MEASURED_RUNS:-10}"
-PLAN_SCENARIOS="${PLAN_SCENARIOS:-baseline arp-poison-no-forward arp-mitm-forward arp-mitm-dns dhcp-spoof mitigation-recovery}"
-PCAP_RETENTION_POLICY="${PCAP_RETENTION_POLICY:-none}"
-PCAP_ENABLE="${PCAP_ENABLE:-1}"
-GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE:-0}"
-PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE:-0}"
+PLAN_SCENARIOS="${PLAN_SCENARIOS:-baseline arp-poison-no-forward arp-mitm-forward arp-mitm-dns dhcp-spoof dhcp-starvation mitigation-recovery}"
+DHCP_STARVATION_WORKERS="${DHCP_STARVATION_WORKERS:-1}"
+PCAP_RETENTION_POLICY="${USER_PCAP_RETENTION_POLICY:-none}"
+PCAP_ENABLE="${USER_PCAP_ENABLE:-1}"
+GUEST_PCAP_ENABLE="${USER_GUEST_PCAP_ENABLE:-0}"
+PCAP_SUMMARIES_ENABLE="${USER_PCAP_SUMMARIES_ENABLE:-0}"
 IPERF_ENABLE="${IPERF_ENABLE:-0}"
 POST_ATTACK_SETTLE_SECONDS="${POST_ATTACK_SETTLE_SECONDS:-0}"
 REMOTE_ROOT="$(research_workspace_root)"
@@ -90,6 +96,15 @@ run_window() {
   local spoofed_domains="${11}"
   local attack_cmd="${12}"
   local aux_cmd="${13}"
+  local post_cleanup_host="${14:-}"
+  local post_cleanup_label="${15:-post-cleanup}"
+  local post_cleanup_cmd="${16:-}"
+  local post_cleanup_use_sudo="${17:-0}"
+  local run_slug_suffix=""
+
+  if [[ "${scenario}" == dhcp-starvation* ]]; then
+    run_slug_suffix="param-workers-${DHCP_STARVATION_WORKERS}"
+  fi
 
   info "Planned run: scenario=${scenario} run_index=${run_index} warmup=${warmup}"
   SKIP_LAB_START="1" \
@@ -101,6 +116,10 @@ run_window() {
   AUX_JOB_LABEL="${scenario}-aux" \
   AUX_JOB_CMD="${aux_cmd}" \
   AUX_JOB_USE_SUDO="$([[ -n "${aux_cmd}" ]] && printf '1' || printf '0')" \
+  POST_CLEANUP_HOST="${post_cleanup_host}" \
+  POST_CLEANUP_LABEL="${post_cleanup_label}" \
+  POST_CLEANUP_CMD="${post_cleanup_cmd}" \
+  POST_CLEANUP_USE_SUDO="${post_cleanup_use_sudo}" \
   PLAN_RUN_INDEX="${run_index}" \
   PLAN_WARMUP="${warmup}" \
   PLAN_DURATION_SECONDS="${duration}" \
@@ -110,9 +129,12 @@ run_window() {
   PLAN_FORWARDING_ENABLED="${forwarding_enabled}" \
   PLAN_DNS_SPOOF_ENABLED="${dns_spoof_enabled}" \
   PLAN_SPOOFED_DOMAINS="${spoofed_domains}" \
+  RUN_SLUG_SUFFIX="${run_slug_suffix}" \
+  DHCP_STARVATION_WORKERS="${DHCP_STARVATION_WORKERS}" \
   PCAP_ENABLE="${PCAP_ENABLE}" \
   GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE}" \
   PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE}" \
+  PCAP_RETENTION_POLICY="${PCAP_RETENTION_POLICY}" \
   IPERF_ENABLE="${IPERF_ENABLE}" \
   POST_ATTACK_SETTLE_SECONDS="${POST_ATTACK_SETTLE_SECONDS}" \
     "${EXPERIMENT_SCRIPT_DIR}/run-scenario-window.sh" "${scenario}" "${duration}" "${note}"
@@ -203,6 +225,48 @@ run_scenario() {
         "" \
         "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 40 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf dhcp-spoof --interface vnic0 --interval 2.0" \
         ""
+      ;;
+    dhcp-starvation)
+      run_window \
+        "dhcp-starvation" \
+        "60" \
+        "Planned DHCP starvation run with spoofed client identities and gateway cleanup" \
+        "${run_index}" \
+        "${warmup}" \
+        "10" \
+        "50" \
+        "" \
+        "0" \
+        "0" \
+        "" \
+        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 40 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf dhcp-starvation --interface vnic0 --interval 0.2 --request-timeout 5.0 --workers ${DHCP_STARVATION_WORKERS}" \
+        "" \
+        "gateway" \
+        "dhcp-starvation-cleanup" \
+        "python3 - '${DHCP_STARVATION_MAC_PREFIX,,}' <<'PY'
+from pathlib import Path
+import sys
+prefix = sys.argv[1].lower()
+changed = False
+for candidate in (Path('/var/lib/misc/dnsmasq.leases'), Path('/var/lib/dhcp/dnsmasq.leases')):
+    if not candidate.exists():
+        continue
+    kept = []
+    for raw_line in candidate.read_text(encoding='utf-8', errors='replace').splitlines():
+        parts = raw_line.split()
+        if len(parts) >= 2 and parts[1].lower().startswith(prefix):
+            changed = True
+            continue
+        kept.append(raw_line)
+    if changed:
+        candidate.write_text(('\\n'.join(kept) + '\\n') if kept else '', encoding='utf-8')
+if changed:
+    print(f'purged DHCP starvation leases for prefix {prefix}')
+else:
+    print(f'no DHCP starvation leases found for prefix {prefix}')
+PY
+systemctl restart dnsmasq" \
+        "1"
       ;;
     mitigation-recovery)
       run_window \

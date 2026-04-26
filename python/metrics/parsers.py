@@ -198,6 +198,8 @@ def observed_wire_source_label(run_dir: Path) -> str | None:
     source = summary.get("ground_truth_source")
     if isinstance(source, str) and source in {"switch_pcap", "victim_pcap"}:
         return source
+    if summary:
+        return "switch_pcap"
     return None
 
 
@@ -212,6 +214,7 @@ def observed_wire_attack_epochs_by_type(
     gateway_ip = meta.get("gateway_lab_ip")
     gateway_mac = str(meta.get("gateway_lab_mac", "")).lower() or None
     attacker_mac = attacker_mac_for_run(meta, attack_records)
+    starvation_mac_prefix = (load_lab_config().get("DHCP_STARVATION_MAC_PREFIX", "02:aa:20") or "02:aa:20").lower()
     if pcap_path is None:
         summary = load_wire_truth_summary(run_dir)
         values = summary.get("attack_epochs_by_type", {})
@@ -260,6 +263,22 @@ def observed_wire_attack_epochs_by_type(
             f"bootp && udp.srcport==67 && udp.dstport==68 && eth.src!={gateway_mac}",
             "frame.time_epoch",
         )
+    starvation_rows = run_tshark_rows(
+        pcap_path,
+        "bootp && udp.srcport==68 && udp.dstport==67",
+        ["frame.time_epoch", "eth.src", "bootp.option.dhcp"],
+    )
+    starvation_epochs: list[str] = []
+    for row in starvation_rows:
+        if len(row) < 3:
+            continue
+        epoch, src_mac, message_type = row[0].strip(), row[1].strip().lower(), row[2].strip().lower()
+        if not epoch or not src_mac.startswith(starvation_mac_prefix):
+            continue
+        if message_type in {"1", "3", "discover", "request"}:
+            starvation_epochs.append(epoch)
+    if starvation_epochs:
+        epochs["dhcp_starvation"] = starvation_epochs
     return epochs
 
 
@@ -368,6 +387,12 @@ def observed_wire_attack_records(run_dir: Path, meta: dict[str, Any]) -> list[di
         except ValueError:
             continue
         records.append({"event": "rogue_dhcp_server_observed", "ts": ts})
+    for value in epochs_by_type.get("dhcp_starvation", []):
+        try:
+            ts = datetime.fromtimestamp(float(value), timezone.utc).isoformat()
+        except ValueError:
+            continue
+        records.append({"event": "dhcp_starvation_observed", "ts": ts})
     return records
 
 
@@ -409,7 +434,6 @@ def build_wire_truth_summary(
     epochs_by_type = observed_wire_attack_epochs_by_type(run_dir, meta, attack_records)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "ground_truth_source": source,
         "capture_duration_seconds": observed_wire_capture_duration_seconds(run_dir),
         "attack_epochs_by_type": epochs_by_type,
         "dns_query_count": observed_wire_dns_query_count(run_dir, meta),

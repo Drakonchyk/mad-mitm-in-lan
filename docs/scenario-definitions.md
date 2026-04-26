@@ -23,6 +23,7 @@ stateDiagram-v2
 | `arp-mitm-forward` | 90 s | `t=10..70 s` | transparent MITM with forwarding enabled |
 | `arp-mitm-dns` | 90 s | `t=10..70 s` | transparent MITM plus focused DNS spoofing |
 | `dhcp-spoof` | 60 s | `t=10..50 s` | focused rogue DHCP advertisement verification on the lab LAN |
+| `dhcp-starvation` | 60 s | `t=10..50 s` | spoofed-client DHCP starvation with gateway lease cleanup after the run |
 | `mitigation-recovery` | 120 s | `t=10..45 s` attack, `t=45 s` mitigation | restoration and recovery timing |
 
 ### Main Timing Windows
@@ -45,6 +46,10 @@ stateDiagram-v2
   - `t=0..10 s`: clean prefix
   - `t=10..50 s`: rogue DHCP offer/ACK broadcasts active
   - `t=50..60 s`: recovery tail
+- `dhcp-starvation`
+  - `t=0..10 s`: clean prefix
+  - `t=10..50 s`: parallel spoofed DHCP clients request leases
+  - `t=50..60 s`: gateway-side cleanup and recovery tail
 - `mitigation-recovery`
   - `t=0..10 s`: clean prefix
   - `t=10..45 s`: ARP MITM + DNS spoof active
@@ -55,54 +60,37 @@ stateDiagram-v2
 
 | Scenario | Duration | Purpose |
 | --- | --- | --- |
-| `intermittent-arp-mitm-dns` | 90 s | pulse attack windows to test reaction speed and missed short windows |
-| `intermittent-dhcp-spoof` | 90 s | pulse rogue DHCP windows to test short-burst DHCP detection and recovery |
-| `dhcp-offer-only` | 60 s | rogue DHCP offers without ACKs to test early-stage DHCP server detection |
-| `noisy-benign-baseline` | 90 s | benign LAN churn to test false positives |
-| `reduced-observability` | 90 s | detector sampling reduction to test degraded visibility |
+| `dhcp-starvation-rogue-dhcp` | 90 s per worker level | DHCP starvation with increasing parallel spoofing workers, real lease-pool logging, and optional reactive rogue-DHCP takeover probes |
+| `visibility-arp-mitm-dns` | 90 s | ARP MITM + DNS spoofing while all sensors receive a sampled live packet feed |
+| `visibility-dhcp-spoof` | 60 s | rogue DHCP spoofing while all sensors receive a sampled live packet feed |
 
 ### Supplementary Timing Windows
 
-- `intermittent-arp-mitm-dns`
+- `dhcp-starvation-rogue-dhcp`
   - `t=0..10 s`: clean prefix
-  - `t=10..15 s`: attack on
-  - `t=15..25 s`: attack off
-  - `t=25..30 s`: attack on
-  - `t=30..40 s`: attack off
-  - `t=40..45 s`: attack on
-  - `t=45..55 s`: attack off
-  - `t=55..60 s`: attack on
-  - `t=60..90 s`: clean tail
-- `intermittent-dhcp-spoof`
-  - `t=0..10 s`: clean prefix
-  - `t=10..15 s`: rogue DHCP on
-  - `t=15..25 s`: attack off
-  - `t=25..30 s`: rogue DHCP on
-  - `t=30..40 s`: attack off
-  - `t=40..45 s`: rogue DHCP on
-  - `t=45..55 s`: attack off
-  - `t=55..60 s`: rogue DHCP on
-  - `t=60..90 s`: clean tail
-- `dhcp-offer-only`
-  - `t=0..10 s`: clean prefix
-  - `t=10..50 s`: rogue DHCP offers only, no ACK replies
-  - `t=50..60 s`: recovery tail
-- `noisy-benign-baseline`
-  - benign DNS refreshes, neighbor cache churn, and extra background traffic
-  - no attacker-controlled poisoning or spoofing
-- `reduced-observability`
+  - `t=10..80 s`: DHCP starvation using spoofed clients
+  - with takeover enabled, `t=10..90 s`: reactive rogue DHCP replies run during the attack window
+  - with takeover enabled, `t=15..90 s`: victim DHCP renew probes retry until takeover or window end
+  - `t=90 s`: cleanup and recovery tail
+- `visibility-arp-mitm-dns`
   - same attack pattern as the focused DNS spoof scenario
-  - detector packet sampling is reduced through `MITM_LAB_PACKET_SAMPLE_RATE`
+  - visibility campaigns retain one full switch pcap per scenario by default and keep compact wire-truth summaries for the rest
+  - Detector, Zeek, and Suricata listen on the sampled live sensor interface
+- `visibility-dhcp-spoof`
+  - same attack pattern as the rogue DHCP spoofing scenario
+  - visibility campaigns retain one full switch pcap per scenario by default and keep compact wire-truth summaries for the rest
+  - Detector, Zeek, and Suricata listen on the sampled live sensor interface
 
 ## Canonical Commands
 
 - demo path:
-  - `make demo-start`
-  - `make demo-scenario`
-  - `make demo-report`
-  - `make demo-capture HOST=sensor IFACE=mitm-sensor0`
+  - `make demo-ui`
 - main plan:
   - `make experiment-plan`
+- visibility plan:
+  - `make visibility-plan`
+- DHCP starvation worker-scaling plan:
+  - `make starvation-takeover-plan`
 - supplementary plan:
   - `make experiment-plan-extra`
 - focused single-scenario wrappers:
@@ -110,6 +98,6 @@ stateDiagram-v2
   - `make scenario-arp-mitm-forward`
   - `make scenario-arp-mitm-dns`
   - `make scenario-dhcp-spoof`
-  - `make scenario-intermittent-dhcp-spoof`
-  - `make scenario-dhcp-offer-only`
+  - `make scenario-dhcp-starvation`
+  - `make scenario-dhcp-starvation-rogue-dhcp`
   - `make scenario-mitigation-recovery`

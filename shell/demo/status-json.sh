@@ -51,24 +51,65 @@ gateway_state="$(vm_state "${GATEWAY_NAME}")"
 victim_state="$(vm_state "${VICTIM_NAME}")"
 attacker_state="$(vm_state "${ATTACKER_NAME}")"
 gateway_ip=""
-victim_ip=""
-attacker_ip=""
+lease_snapshot_json="{}"
 
 if [[ "${gateway_state,,}" == *"running"* ]]; then
   gateway_ip="$(quick_gateway_ip)"
-fi
+  lease_snapshot_json="$(
+    lab_ssh gateway "sudo python3 - '${VICTIM_MAC,,}' '${ATTACKER_MAC,,}' '${DHCP_STARVATION_MAC_PREFIX,,}' '${LAB_DHCP_RANGE_START}' '${LAB_DHCP_RANGE_END}' <<'PY'
+from ipaddress import ip_address
+import json
+from pathlib import Path
+import sys
 
-if [[ "${victim_state,,}" == *"running"* ]]; then
-  victim_ip="$(lab_guest_ip victim 2>/dev/null || true)"
-fi
+victim_mac = sys.argv[1].lower()
+attacker_mac = sys.argv[2].lower()
+starvation_prefix = sys.argv[3].lower()
+range_start = ip_address(sys.argv[4])
+range_end = ip_address(sys.argv[5])
 
-if [[ "${attacker_state,,}" == *"running"* ]]; then
-  attacker_ip="$(lab_guest_ip attacker 2>/dev/null || true)"
+leases = []
+for candidate in (Path('/var/lib/misc/dnsmasq.leases'), Path('/var/lib/dhcp/dnsmasq.leases')):
+    if not candidate.exists():
+        continue
+    for raw_line in candidate.read_text(encoding='utf-8', errors='replace').splitlines():
+        parts = raw_line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            lease_ip = ip_address(parts[2])
+        except ValueError:
+            continue
+        if not (range_start <= lease_ip <= range_end):
+            continue
+        leases.append({
+            'expiry': parts[0],
+            'mac': parts[1].lower(),
+            'ip': str(lease_ip),
+            'hostname': parts[3] if len(parts) >= 4 else '',
+        })
+
+attack_leases = [lease for lease in leases if lease['mac'].startswith(starvation_prefix)]
+payload = {
+    'victim_ip': next((lease['ip'] for lease in leases if lease['mac'] == victim_mac), ''),
+    'attacker_ip': next((lease['ip'] for lease in leases if lease['mac'] == attacker_mac), ''),
+    'pool_total': int(range_end) - int(range_start) + 1,
+    'taken': len(leases),
+    'attack_taken': len(attack_leases),
+    'normal_taken': len(leases) - len(attack_leases),
+    'free': (int(range_end) - int(range_start) + 1) - len(leases),
+    'attack_ips': [lease['ip'] for lease in attack_leases[:8]],
+}
+print(json.dumps(payload, sort_keys=True))
+PY" 2>/dev/null || printf '{}'
+  )"
 fi
 
 python3 - <<PY
 import json
 from datetime import datetime, timezone
+
+lease_snapshot = json.loads(${lease_snapshot_json@Q}) if ${lease_snapshot_json@Q} else {}
 
 payload = {
     "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -89,16 +130,17 @@ payload = {
         "victim": {
             "vm_name": ${VICTIM_NAME@Q},
             "state": ${victim_state@Q},
-            "ip": ${victim_ip@Q},
+            "ip": lease_snapshot.get("victim_ip", ""),
             "mac": ${VICTIM_MAC@Q},
         },
         "attacker": {
             "vm_name": ${ATTACKER_NAME@Q},
             "state": ${attacker_state@Q},
-            "ip": ${attacker_ip@Q},
+            "ip": lease_snapshot.get("attacker_ip", ""),
             "mac": ${ATTACKER_MAC@Q},
         },
     },
+    "dhcp_pool": lease_snapshot,
 }
 
 print(json.dumps(payload, sort_keys=True))

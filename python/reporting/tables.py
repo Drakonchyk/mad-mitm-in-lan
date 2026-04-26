@@ -45,10 +45,18 @@ def _write_rows(path: Path, rows: list[dict[str, Any]]) -> Path | None:
     if not rows:
         return None
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    def clean(value: Any) -> Any:
+        if value is None:
+            return ""
+        if isinstance(value, float):
+            return f"{value:.3f}".rstrip("0").rstrip(".")
+        return value
+
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows([{key: clean(value) for key, value in row.items()} for row in rows])
     return path
 
 
@@ -145,7 +153,7 @@ def build_table_timing_summary(rows: list[dict[str, Any]], output_dir: Path) -> 
         scenario_rows = rows_for_scenario(rows, scenario)
         record: dict[str, Any] = {"scenario": SCENARIO_LABELS[scenario]}
         for tool in TOOL_ORDER:
-            record[f"{tool}_supported_mean"] = _mean_or_none([row.get(f"{tool}_ttd_seconds") for row in scenario_rows])
+            record[f"{tool}_ttd_mean"] = _mean_or_none([row.get(f"{tool}_ttd_seconds") for row in scenario_rows])
             record[f"{tool}_attack_relative_mean"] = _mean_or_none([attack_relative_ttd(row, tool) for row in scenario_rows])
         summary_rows.append(record)
     return _write_rows(output_dir / "table-02-timing-summary.csv", summary_rows)
@@ -195,7 +203,7 @@ def build_table_tool_overall(rows: list[dict[str, Any]], output_dir: Path) -> Pa
                 "precision": confusion.precision(),
                 "f1": confusion.f1(),
                 "mean_attack_relative_ttd_s": _mean_or_none([attack_relative_ttd(row, tool) for row in attack_rows]),
-                "mean_supported_ttd_s": row_mean([row.get(f"{tool}_ttd_seconds") for row in attack_rows]),
+                "mean_ttd_s": row_mean([row.get(f"{tool}_ttd_seconds") for row in attack_rows]),
                 "mean_alerts_per_run": row_mean([row.get(tool_alert_field(tool)) for row in rows]),
             }
         )
@@ -214,7 +222,7 @@ def build_table_tool_by_scenario(rows: list[dict[str, Any]], output_dir: Path) -
                     "runs": len(scenario_rows),
                     "detection_rate_pct": safe_divide(sum(1 for row in scenario_rows if row.get(f"{tool}_detected")), len(scenario_rows)) * 100.0,
                     "mean_attack_relative_ttd_s": _mean_or_none([attack_relative_ttd(row, tool) for row in scenario_rows]),
-                    "mean_supported_ttd_s": row_mean([row.get(f"{tool}_ttd_seconds") for row in scenario_rows]),
+                    "mean_ttd_s": row_mean([row.get(f"{tool}_ttd_seconds") for row in scenario_rows]),
                     "mean_alerts_per_run": row_mean([row.get(tool_alert_field(tool)) for row in scenario_rows]),
                 }
             )
@@ -229,9 +237,11 @@ def build_table_wire_truth_summary(rows: list[dict[str, Any]], output_dir: Path)
             {
                 "scenario": SCENARIO_LABELS[scenario],
                 "mean_wire_packets": _mean_or_none([float(row.get("ground_truth_attack_events") or 0) for row in scenario_rows]),
+                "mean_action_events": _mean_or_none([float(row.get("ground_truth_attacker_action_events") or 0) for row in scenario_rows]),
                 "mean_attack_duration_s": _mean_or_none([row.get("ground_truth_attack_duration_seconds") for row in scenario_rows]),
                 "mean_capture_duration_s": _mean_or_none([row.get("ground_truth_capture_duration_seconds") for row in scenario_rows]),
                 "mean_arp_packets": _mean_or_none([float((row.get("ground_truth_attack_types", {}) or {}).get("arp_spoof", 0) or 0) for row in scenario_rows]),
+                "mean_arp_actions": _mean_or_none([float((row.get("ground_truth_attacker_action_types", {}) or {}).get("arp_spoof", 0) or 0) for row in scenario_rows]),
                 "mean_dns_packets": _mean_or_none([float((row.get("ground_truth_attack_types", {}) or {}).get("dns_spoof", 0) or 0) for row in scenario_rows]),
                 "mean_dhcp_packets": _mean_or_none([float((row.get("ground_truth_attack_types", {}) or {}).get("dhcp_spoof", 0) or 0) for row in scenario_rows]),
                 "mean_arp_pps": _mean_or_none([float((row.get("ground_truth_attack_type_packet_rates_pps", {}) or {}).get("arp_spoof", 0) or 0) for row in scenario_rows]),
@@ -244,20 +254,168 @@ def build_table_wire_truth_summary(rows: list[dict[str, Any]], output_dir: Path)
     return _write_rows(output_dir / "table-15-wire-truth-summary.csv", summary_rows)
 
 
-def build_table_control_plane_noise(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
-    summary_rows = []
+def _detected_count(rows: list[dict[str, Any]], tool: str) -> int:
+    return sum(1 for row in rows if row.get(f"{tool}_detected"))
+
+
+def _rate_pct(count: int, total: int) -> float | None:
+    if total <= 0:
+        return None
+    return count / total * 100.0
+
+
+def _mean_event_count(rows: list[dict[str, Any]], event_name: str) -> float | None:
+    values = []
+    for row in rows:
+        records = load_jsonl(detector_delta_path(run_dir_for_row(row)))
+        values.append(float(sum(1 for record in records if record.get("event") == event_name)))
+    return _mean_or_none(values)
+
+
+def _build_detection_table(
+    rows: list[dict[str, Any]],
+    scenarios: list[str],
+    output_path: Path,
+) -> Path | None:
+    table_rows: list[dict[str, Any]] = []
+    for scenario in scenarios:
+        scenario_rows = rows_for_scenario(rows, scenario)
+        if not scenario_rows:
+            continue
+        record: dict[str, Any] = {
+            "scenario": SCENARIO_LABELS[scenario],
+            "runs": len(scenario_rows),
+        }
+        for tool in TOOL_ORDER:
+            detected = _detected_count(scenario_rows, tool)
+            record[f"{tool}_detected_runs"] = detected
+            record[f"{tool}_detection_rate_pct"] = _rate_pct(detected, len(scenario_rows))
+            record[f"{tool}_mean_attack_relative_ttd_s"] = _mean_or_none([attack_relative_ttd(row, tool) for row in scenario_rows])
+        table_rows.append(record)
+    return _write_rows(output_path, table_rows)
+
+
+def build_table_thesis_main_detection(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
+    return _build_detection_table(
+        rows,
+        MAIN_SCENARIOS,
+        output_dir / "table-01-thesis-main-detection-timing.csv",
+    )
+
+
+def build_table_thesis_supplementary_detection(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
+    return _build_detection_table(
+        rows,
+        SUPPLEMENTARY_SCENARIOS,
+        output_dir / "table-02-thesis-supplementary-campaign-summary.csv",
+    )
+
+
+def build_table_thesis_detector_semantics(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
+    table_rows: list[dict[str, Any]] = []
     for scenario in _ordered_scenarios(rows):
         scenario_rows = rows_for_scenario(rows, scenario)
-        summary_rows.append(
+        if not scenario_rows:
+            continue
+        table_rows.append(
             {
                 "scenario": SCENARIO_LABELS[scenario],
-                "mean_control_arp": _mean_or_none([float((row.get("ground_truth_control_plane_packet_counts", {}) or {}).get("arp", 0) or 0) for row in scenario_rows]),
-                "mean_control_broadcast_l2": _mean_or_none([float((row.get("ground_truth_control_plane_packet_counts", {}) or {}).get("broadcast_l2", 0) or 0) for row in scenario_rows]),
-                "mean_control_dhcp": _mean_or_none([float((row.get("ground_truth_control_plane_packet_counts", {}) or {}).get("dhcp", 0) or 0) for row in scenario_rows]),
-                "mean_control_dns": _mean_or_none([float((row.get("ground_truth_control_plane_packet_counts", {}) or {}).get("dns", 0) or 0) for row in scenario_rows]),
+                "runs": len(scenario_rows),
+                "gateway_mac_changed_mean": _mean_or_none([float(row.get("gateway_mac_changed") or 0) for row in scenario_rows]),
+                "multiple_gateway_macs_seen_mean": _mean_or_none([float(row.get("multiple_gateway_macs_seen") or 0) for row in scenario_rows]),
+                "domain_resolution_changed_mean": _mean_or_none([float(row.get("domain_resolution_changed") or 0) for row in scenario_rows]),
+                "rogue_dhcp_server_seen_mean": _mean_or_none([float(row.get("rogue_dhcp_server_seen") or 0) for row in scenario_rows]),
+                "dhcp_binding_conflict_seen_mean": _mean_or_none([float(row.get("dhcp_binding_conflict_seen") or 0) for row in scenario_rows]),
+                "dhcp_starvation_packet_seen_mean": _mean_event_count(scenario_rows, "dhcp_starvation_packet_seen"),
+                "dhcp_starvation_seen_mean": _mean_event_count(scenario_rows, "dhcp_starvation_seen"),
+                "restoration_events_mean": _mean_or_none([float(row.get("restoration_events") or 0) for row in scenario_rows]),
             }
         )
-    return _write_rows(output_dir / "table-16-control-plane-noise.csv", summary_rows)
+    return _write_rows(output_dir / "table-03-thesis-detector-semantic-coverage.csv", table_rows)
+
+
+def build_table_thesis_visibility_thresholds(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
+    table_rows: list[dict[str, Any]] = []
+    for scenario in ["visibility-arp-mitm-dns", "visibility-dhcp-spoof"]:
+        scenario_rows = rows_for_scenario(rows, scenario)
+        if not scenario_rows:
+            continue
+        levels = sorted({int(row.get("sensor_visibility_percent") or 0) for row in scenario_rows}, reverse=True)
+        for tool in TOOL_ORDER:
+            detected_rows = [row for row in scenario_rows if row.get(f"{tool}_detected")]
+            missed_rows = [row for row in scenario_rows if not row.get(f"{tool}_detected")]
+            recalls = [float(row.get(f"{tool}_event_recall")) * 100.0 for row in scenario_rows if row.get(f"{tool}_event_recall") is not None]
+            table_rows.append(
+                {
+                    "scenario": SCENARIO_LABELS[scenario],
+                    "tool": TOOL_LABELS[tool],
+                    "visibility_levels_tested": " ".join(str(level) for level in levels),
+                    "runs": len(scenario_rows),
+                    "detected_runs": len(detected_rows),
+                    "detection_rate_pct": _rate_pct(len(detected_rows), len(scenario_rows)),
+                    "lowest_visibility_with_detection_pct": min((int(row.get("sensor_visibility_percent") or 0) for row in detected_rows), default=None),
+                    "highest_visibility_with_miss_pct": max((int(row.get("sensor_visibility_percent") or 0) for row in missed_rows), default=None),
+                    "mean_event_recall_pct": _mean_or_none(recalls),
+                    "min_event_recall_pct": min(recalls) if recalls else None,
+                }
+            )
+    return _write_rows(output_dir / "table-04-thesis-visibility-thresholds.csv", table_rows)
+
+
+def build_table_thesis_starvation_scaling(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
+    scenario_rows = [row for row in rows_for_scenario(rows, "dhcp-starvation-rogue-dhcp") if row.get("dhcp_starvation_workers") is not None]
+    groups: dict[tuple[int, str], list[dict[str, Any]]] = {}
+    for row in scenario_rows:
+        workers = int(row.get("dhcp_starvation_workers") or 0)
+        mode = "takeover" if row.get("takeover_enabled") else "lease-flood"
+        groups.setdefault((workers, mode), []).append(row)
+
+    table_rows: list[dict[str, Any]] = []
+    for (workers, mode), group_rows in sorted(groups.items()):
+        pool_full_rows = [row for row in group_rows if row.get("dhcp_pool_full_at")]
+        takeover_success_rows = [row for row in group_rows if row.get("dhcp_takeover_success")]
+        table_rows.append(
+            {
+                "workers": workers,
+                "mode": mode,
+                "runs": len(group_rows),
+                "pool_total_mean": _mean_or_none([row.get("dhcp_pool_total") for row in group_rows]),
+                "attack_leases_max_mean": _mean_or_none([row.get("dhcp_attack_leases_max") for row in group_rows]),
+                "pool_free_min_mean": _mean_or_none([row.get("dhcp_pool_free_min") for row in group_rows]),
+                "pool_full_runs": len(pool_full_rows),
+                "pool_full_rate_pct": _rate_pct(len(pool_full_rows), len(group_rows)),
+                "pool_full_mean_seconds_from_attack_start": _mean_or_none([row.get("dhcp_pool_full_seconds_from_attack_start") for row in pool_full_rows]),
+                "rogue_first_event_mean_seconds_from_rogue_start": _mean_or_none([row.get("dhcp_rogue_first_event_seconds_from_rogue_start") for row in group_rows]),
+                "takeover_success_runs": len(takeover_success_rows),
+                "takeover_success_rate_pct": _rate_pct(len(takeover_success_rows), len(group_rows)) if mode == "takeover" else None,
+                "takeover_mean_seconds_from_rogue_start": _mean_or_none([row.get("dhcp_takeover_seconds_from_rogue_start") for row in takeover_success_rows]),
+                "takeover_mean_seconds_from_pool_full": _mean_or_none([row.get("dhcp_takeover_seconds_from_pool_full") for row in takeover_success_rows]),
+            }
+        )
+    return _write_rows(output_dir / "table-05-thesis-dhcp-starvation-scaling.csv", table_rows)
+
+
+def build_table_thesis_recovery_timing(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
+    scenario_rows = rows_for_scenario(rows, "mitigation-recovery")
+    if not scenario_rows:
+        return None
+    recovery_values = [
+        float(row.get("detector_recovery_seconds"))
+        for row in scenario_rows
+        if row.get("detector_recovery_seconds") is not None
+    ]
+    table_rows = [
+        {
+            "scenario": SCENARIO_LABELS["mitigation-recovery"],
+            "runs": len(scenario_rows),
+            "restoration_runs": len(recovery_values),
+            "restoration_rate_pct": _rate_pct(len(recovery_values), len(scenario_rows)),
+            "detector_recovery_mean_s": _mean_or_none(recovery_values),
+            "detector_recovery_min_s": min(recovery_values) if recovery_values else None,
+            "detector_recovery_max_s": max(recovery_values) if recovery_values else None,
+        }
+    ]
+    return _write_rows(output_dir / "table-06-thesis-recovery-timing.csv", table_rows)
 
 
 def build_table_representative_context(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
@@ -285,7 +443,7 @@ def build_table_representative_first_alerts(rows: list[dict[str, Any]], output_d
         {
             "tool": TOOL_LABELS[tool],
             "first_alert_at": tool_first_alert_timestamp(row, tool),
-            "supported_ttd_s": row.get(f"{tool}_ttd_seconds"),
+            "ttd_s": row.get(f"{tool}_ttd_seconds"),
             "attack_relative_ttd_s": attack_relative_ttd(row, tool),
             "alerts": row.get(tool_alert_field(tool)),
         }

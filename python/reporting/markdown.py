@@ -99,7 +99,7 @@ def write_markdown_summary(
             "",
             "## Findings",
             "",
-            "- This report now mirrors the checked-in analysis notebook rather than a smaller report-only subset.",
+            "- The generated tables are limited to thesis-facing summaries; packet-forensics details remain in the raw run artifacts and dataset export.",
             f"- Detector mean attack-relative first-alert time: {format_float(row_mean([attack_relative_ttd(row, 'detector') for row in attack_rows]))} s.",
             f"- Zeek mean attack-relative first-alert time: {format_float(row_mean([attack_relative_ttd(row, 'zeek') for row in attack_rows]))} s.",
             f"- Suricata mean attack-relative first-alert time: {format_float(row_mean([attack_relative_ttd(row, 'suricata') for row in attack_rows]))} s.",

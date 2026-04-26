@@ -1,6 +1,15 @@
 const durationRange = document.getElementById("durationRange");
 const durationNumber = document.getElementById("durationNumber");
+const visibilityRange = document.getElementById("visibilityRange");
+const visibilityNumber = document.getElementById("visibilityNumber");
+const visibilityOptions = document.getElementById("visibilityOptions");
+const takeoverOptions = document.getElementById("takeoverOptions");
+const takeoverEnabled = document.getElementById("takeoverEnabled");
+const workersRange = document.getElementById("workersRange");
+const workersNumber = document.getElementById("workersNumber");
 const scenarioButtons = document.getElementById("scenarioButtons");
+const runSelectedScenario = document.getElementById("runSelectedScenario");
+const downloadLatestRun = document.getElementById("downloadLatestRun");
 const messageBar = document.getElementById("messageBar");
 
 const toolCards = {
@@ -25,6 +34,7 @@ const logPathTargets = {
 
 let cachedScenarios = [];
 let busy = false;
+let selectedScenario = "";
 
 function setMessage(text, tone = "muted") {
   messageBar.className = `message ${tone}`;
@@ -37,8 +47,24 @@ function syncDurationInputs(value) {
   durationNumber.value = clamped;
 }
 
+function syncVisibilityInputs(value) {
+  const clamped = Math.max(0, Math.min(100, Number(value) || 0));
+  visibilityRange.value = clamped;
+  visibilityNumber.value = clamped;
+}
+
+function syncWorkersInputs(value) {
+  const clamped = Math.max(1, Math.min(108, Number(value) || 1));
+  workersRange.value = clamped;
+  workersNumber.value = clamped;
+}
+
 durationRange.addEventListener("input", (event) => syncDurationInputs(event.target.value));
 durationNumber.addEventListener("input", (event) => syncDurationInputs(event.target.value));
+visibilityRange.addEventListener("input", (event) => syncVisibilityInputs(event.target.value));
+visibilityNumber.addEventListener("input", (event) => syncVisibilityInputs(event.target.value));
+workersRange.addEventListener("input", (event) => syncWorkersInputs(event.target.value));
+workersNumber.addEventListener("input", (event) => syncWorkersInputs(event.target.value));
 
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, {
@@ -52,33 +78,114 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
+function scenarioNeedsVisibility(name) {
+  return name === "visibility";
+}
+
+function scenarioSupportsTakeover(name) {
+  return name === "dhcp-starvation-rogue-dhcp";
+}
+
+function visibilityScenarioName() {
+  return document.querySelector("input[name='visibilityScenario']:checked")?.value || "visibility-arp-mitm-dns";
+}
+
+function effectiveScenarioName() {
+  return selectedScenario === "visibility" ? visibilityScenarioName() : selectedScenario;
+}
+
+function selectedScenarioLabel() {
+  if (!selectedScenario) {
+    return "";
+  }
+  if (selectedScenario === "visibility") {
+    return visibilityScenarioName() === "visibility-dhcp-spoof" ? "Visibility DHCP" : "Visibility ARP + DNS";
+  }
+  return cachedScenarios.find((scenario) => scenario.name === selectedScenario)?.label || selectedScenario;
+}
+
+function updateScenarioControls() {
+  visibilityOptions.classList.toggle("hidden", !scenarioNeedsVisibility(selectedScenario));
+  takeoverOptions.classList.toggle("hidden", !scenarioSupportsTakeover(selectedScenario));
+  runSelectedScenario.disabled = busy || !selectedScenario;
+  runSelectedScenario.textContent = selectedScenario ? `Run ${selectedScenarioLabel()}` : "Run Selected Scenario";
+}
+
+function scenarioButtonRows() {
+  const rows = cachedScenarios.filter((scenario) => !scenario.name.startsWith("visibility-"));
+  const firstVisibility = cachedScenarios.find((scenario) => scenario.name.startsWith("visibility-"));
+  if (firstVisibility) {
+    rows.push({
+      name: "visibility",
+      label: "Visibility Test",
+      featured: true,
+    });
+  }
+  return rows;
+}
+
 function renderScenarioButtons() {
   scenarioButtons.innerHTML = "";
-  cachedScenarios.forEach((scenario) => {
+  scenarioButtonRows().forEach((scenario) => {
     const button = document.createElement("button");
     button.textContent = scenario.label;
-    button.className = scenario.featured ? "featured" : "";
+    const classes = [];
+    if (scenario.featured) {
+      classes.push("featured");
+    }
+    if (scenario.name === selectedScenario) {
+      classes.push("selected");
+    }
+    button.className = classes.join(" ");
     button.disabled = busy;
-    button.addEventListener("click", async () => {
-      try {
-        setMessage(`Starting ${scenario.label}...`);
-        await fetchJson("/api/action", {
-          method: "POST",
-          body: JSON.stringify({
-            action: "run_scenario",
-            scenario: scenario.name,
-            duration: Number(durationNumber.value),
-          }),
-        });
-        setMessage(`${scenario.label} launched.`, "muted");
-        await refreshAll();
-      } catch (error) {
-        setMessage(error.message, "danger");
-      }
+    button.addEventListener("click", () => {
+      selectedScenario = scenario.name;
+      renderScenarioButtons();
+      updateScenarioControls();
+      setMessage(`${selectedScenarioLabel()} selected.`, "muted");
     });
     scenarioButtons.appendChild(button);
   });
+  updateScenarioControls();
 }
+
+runSelectedScenario.addEventListener("click", async () => {
+  if (!selectedScenario) {
+    setMessage("Select a scenario first.", "danger");
+    return;
+  }
+  const scenarioName = effectiveScenarioName();
+  const label = selectedScenarioLabel();
+  try {
+    setMessage(`Starting ${label}...`);
+    runSelectedScenario.disabled = true;
+    await fetchJson("/api/action", {
+      method: "POST",
+      body: JSON.stringify({
+        action: "run_scenario",
+        scenario: scenarioName,
+        duration: Number(durationNumber.value),
+        visibility: Number(visibilityNumber.value),
+        workers: Number(workersNumber.value),
+        takeover_enabled: !scenarioSupportsTakeover(selectedScenario) || takeoverEnabled.checked,
+      }),
+    });
+    setMessage(`${label} launched.`, "muted");
+    await refreshAll();
+  } catch (error) {
+    setMessage(error.message, "danger");
+  } finally {
+    updateScenarioControls();
+  }
+});
+
+document.querySelectorAll("input[name='visibilityScenario']").forEach((input) => {
+  input.addEventListener("change", () => updateScenarioControls());
+});
+
+downloadLatestRun.addEventListener("click", () => {
+  window.location.href = "/api/download/latest-run.zip";
+});
 
 function setActionButtonsDisabled(disabled) {
   document.querySelectorAll("[data-action]").forEach((button) => {
@@ -101,6 +208,7 @@ function badge(label, running) {
 
 function renderLabStatus(lab, facts) {
   document.getElementById("labGeneratedAt").textContent = lab.generated_at || "";
+  const pool = lab.dhcp_pool || {};
   const hostRows = Object.entries(lab.hosts || {}).map(([key, host]) => {
     const running = (host.state || "").toLowerCase().includes("running");
     const macByHost = {
@@ -140,6 +248,10 @@ function renderLabStatus(lab, facts) {
     <div class="row">
       <div><strong>Tracked Domains</strong><br><span class="muted">${facts.detector_domains || "—"}</span></div>
       ${badge(`${(facts.detector_domains || "").split(/\s+/).filter(Boolean).length || 0} domains`, true)}
+    </div>
+    <div class="row">
+      <div><strong>DHCP Pool</strong><br><span class="muted">free ${pool.free ?? "—"} · taken ${pool.taken ?? "—"} · attack ${pool.attack_taken ?? "—"}</span></div>
+      ${badge(`${pool.pool_total ?? "—"} total`, true)}
     </div>
     ${hostRows}
   `;
@@ -183,15 +295,21 @@ function renderJobStatus(jobState) {
 
 function renderLatestResult(latest) {
   const container = document.getElementById("latestResult");
+  downloadLatestRun.disabled = !latest || !latest.path;
   if (!latest || !latest.path) {
     container.innerHTML = `<div class="muted">No saved run yet.</div>`;
     return;
   }
   const gtTypes = Object.entries(latest.ground_truth_attack_types || {}).map(([key, value]) => `${key}=${value}`).join(", ") || "none";
-  const arpDirections = Object.entries(latest.ground_truth_arp_spoof_direction_counts || {}).map(([key, value]) => `${key}=${value}`).join(", ");
+  const arpDirections = Object.entries(latest.ground_truth_arp_spoof_direction_counts || {})
+    .filter(([, value]) => Number(value) > 0)
+    .map(([key, value]) => `${key}=${value}`).join(", ");
   const detectorTypes = Object.entries(latest.detector_attack_type_counts || {}).map(([key, value]) => `${key}=${value}`).join(", ") || "none";
   const zeekTypes = Object.entries(latest.zeek_attack_type_counts || {}).map(([key, value]) => `${key}=${value}`).join(", ") || "none";
   const suricataTypes = Object.entries(latest.suricata_attack_type_counts || {}).map(([key, value]) => `${key}=${value}`).join(", ") || "none";
+  const starvationNote = (latest.scenario || "").includes("starvation")
+    ? `<div class="inline-help">DHCP starvation note: ground truth here counts matched starvation DHCP packets on the wire. Cleanup release packets are excluded.</div>`
+    : "";
   container.innerHTML = `
     <div><strong>${latest.scenario || latest.path}</strong></div>
     <div class="muted">${latest.summary_path || ""}</div>
@@ -205,6 +323,7 @@ function renderLatestResult(latest) {
       <div class="muted">Types: ${zeekTypes}</div>
       <div class="row"><span class="muted">Suricata</span><strong>${latest.suricata_alert_events ?? "—"}</strong></div>
       <div class="muted">Types: ${suricataTypes}</div>
+      ${starvationNote}
     </div>
   `;
 }
@@ -265,7 +384,6 @@ function renderGroundTruthCard(latest) {
         <h2>Ground Truth (Switch)</h2>
         <div class="muted">${latest.scenario || latest.path}</div>
       </div>
-      ${badge(latest.ground_truth_source || "saved run", true)}
     </div>
     <div class="stack compact">
       <div class="inline-help">Counts here come from the mirrored switch view and represent matched attack packets on the wire.</div>
@@ -322,6 +440,14 @@ async function postSimpleAction(action) {
       body: JSON.stringify({ action }),
     });
     setMessage(payload.message || "Action completed.");
+    if (payload.download_url) {
+      const link = document.createElement("a");
+      link.href = payload.download_url;
+      link.download = "";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
     await refreshAll();
   } catch (error) {
     setMessage(error.message, "danger");
@@ -355,6 +481,8 @@ async function refreshAll() {
 }
 
 syncDurationInputs(20);
+syncVisibilityInputs(100);
+syncWorkersInputs(1);
 refreshAll().catch((error) => setMessage(error.message, "danger"));
 setInterval(() => {
   refreshAll().catch((error) => setMessage(error.message, "danger"));

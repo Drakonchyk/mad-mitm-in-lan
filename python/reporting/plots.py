@@ -34,11 +34,9 @@ SCENARIO_COLORS = {
     "arp-mitm-dns": "#2563eb",
     "dhcp-spoof": "#0f766e",
     "mitigation-recovery": "#14b8a6",
-    "intermittent-arp-mitm-dns": "#7c3aed",
-    "intermittent-dhcp-spoof": "#0891b2",
-    "dhcp-offer-only": "#22c55e",
-    "noisy-benign-baseline": "#64748b",
-    "reduced-observability": "#db2777",
+    "dhcp-starvation-rogue-dhcp": "#92400e",
+    "visibility-arp-mitm-dns": "#be123c",
+    "visibility-dhcp-spoof": "#0e7490",
 }
 SEMANTIC_EVENT_COLORS = {
     "gateway_mac_changed": "#dc2626",
@@ -212,6 +210,332 @@ def _plot_mean_alert_volume(rows: list[dict[str, Any]], output_dir: Path, plt: A
     return _save(fig, output_dir / "figure-03-mean-alert-volume-by-scenario.png", plt)
 
 
+def _visibility_campaign_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in rows
+        if str(row.get("scenario", "")).startswith("visibility-")
+        and row.get("sensor_visibility_percent") is not None
+    ]
+
+
+def _plot_visibility_detection_survival(rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
+    campaign_rows = _visibility_campaign_rows(rows)
+    if not campaign_rows:
+        return None
+
+    scenarios = sorted({str(row["scenario"]) for row in campaign_rows}, key=lambda item: SCENARIO_LABELS.get(item, item))
+    fig, axes = plt.subplots(len(scenarios), 1, figsize=(8.8, max(4.2, 3.0 * len(scenarios))), sharex=True)
+    if len(scenarios) == 1:
+        axes = [axes]
+
+    for ax, scenario in zip(axes, scenarios):
+        scenario_rows = rows_for_scenario(campaign_rows, scenario)
+        x_values = sorted({int(row.get("sensor_visibility_percent") or 0) for row in scenario_rows})
+        for tool in TOOL_ORDER:
+            y_values = []
+            for visibility in x_values:
+                matching = [row for row in scenario_rows if int(row.get("sensor_visibility_percent") or 0) == visibility]
+                y_values.append(sum(1 for row in matching if row.get(f"{tool}_detected")) / len(matching) * 100.0 if matching else math.nan)
+            ax.plot(x_values, y_values, marker="o", linewidth=2.2, color=TOOL_COLORS[tool], label=TOOL_LABELS[tool])
+        ax.set_ylim(-4, 104)
+        ax.set_ylabel("Detected runs (%)")
+        ax.set_title(f"{SCENARIO_LABELS.get(scenario, scenario)} Visibility Survival")
+        ax.grid(True, axis="y", alpha=0.32)
+
+    axes[-1].set_xlabel("Sensor visibility (%)")
+    axes[0].legend(loc="lower right")
+    return _save(fig, output_dir / "figure-28-visibility-detection-survival.png", plt)
+
+
+def _plot_visibility_alert_volume(rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
+    campaign_rows = _visibility_campaign_rows(rows)
+    if not campaign_rows:
+        return None
+
+    scenarios = sorted({str(row["scenario"]) for row in campaign_rows}, key=lambda item: SCENARIO_LABELS.get(item, item))
+    fig, axes = plt.subplots(len(scenarios), 1, figsize=(8.8, max(4.2, 3.0 * len(scenarios))), sharex=True)
+    if len(scenarios) == 1:
+        axes = [axes]
+
+    for ax, scenario in zip(axes, scenarios):
+        scenario_rows = rows_for_scenario(campaign_rows, scenario)
+        x_values = sorted({int(row.get("sensor_visibility_percent") or 0) for row in scenario_rows})
+        for tool in TOOL_ORDER:
+            y_values = []
+            for visibility in x_values:
+                matching = [row for row in scenario_rows if int(row.get("sensor_visibility_percent") or 0) == visibility]
+                y_values.append(_mean_or_none([row.get(tool_alert_field(tool)) for row in matching]) or 0.0)
+            ax.plot(x_values, y_values, marker="o", linewidth=2.2, color=TOOL_COLORS[tool], label=TOOL_LABELS[tool])
+        ax.set_ylabel("Mean alerts")
+        ax.set_title(f"{SCENARIO_LABELS.get(scenario, scenario)} Alert Volume Under Packet Loss")
+
+    axes[-1].set_xlabel("Sensor visibility (%)")
+    axes[0].legend(loc="upper left")
+    return _save(fig, output_dir / "figure-29-visibility-alert-volume.png", plt)
+
+
+def _plot_visibility_event_recall_triptych(rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
+    campaign_rows = _visibility_campaign_rows(rows)
+    if not campaign_rows:
+        return None
+
+    scenarios = sorted({str(row["scenario"]) for row in campaign_rows}, key=lambda item: SCENARIO_LABELS.get(item, item))
+    fig, axes = plt.subplots(1, 3, figsize=(15.0, 4.8), sharey=True)
+    for ax, tool in zip(axes, TOOL_ORDER):
+        for scenario in scenarios:
+            scenario_rows = rows_for_scenario(campaign_rows, scenario)
+            x_values = sorted({int(row.get("sensor_visibility_percent") or 0) for row in scenario_rows})
+            y_values = []
+            for visibility in x_values:
+                matching = [row for row in scenario_rows if int(row.get("sensor_visibility_percent") or 0) == visibility]
+                y_values.append(_mean_or_none([row.get(f"{tool}_event_recall") for row in matching]))
+            ax.plot(x_values, [value if value is not None else math.nan for value in y_values], marker="o", linewidth=2.0, label=SCENARIO_LABELS.get(scenario, scenario))
+        ax.axhline(1.0, color="#6b7280", linestyle="--", linewidth=1.1, alpha=0.7)
+        ax.set_title(TOOL_LABELS[tool])
+        ax.set_xlabel("Sensor visibility (%)")
+        ax.set_ylim(-0.04, 1.04)
+        ax.grid(True, axis="y", alpha=0.32)
+    axes[0].set_ylabel("Event recall")
+    axes[-1].legend(loc="lower right")
+    fig.suptitle("Visibility Event Recall Dependency")
+    return _save(fig, output_dir / "figure-39-visibility-event-recall-triptych.png", plt)
+
+
+def _plot_visibility_ttd_triptych(rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
+    campaign_rows = _visibility_campaign_rows(rows)
+    if not campaign_rows:
+        return None
+
+    scenarios = sorted({str(row["scenario"]) for row in campaign_rows}, key=lambda item: SCENARIO_LABELS.get(item, item))
+    visibility_values = sorted(
+        {int(row.get("sensor_visibility_percent") or 0) for row in campaign_rows},
+        reverse=True,
+    )
+    row_labels: list[str] = []
+    matrix: list[list[float]] = []
+    misses: list[list[bool]] = []
+    for scenario in scenarios:
+        scenario_rows = rows_for_scenario(campaign_rows, scenario)
+        for tool in TOOL_ORDER:
+            row_labels.append(f"{SCENARIO_LABELS.get(scenario, scenario)} / {TOOL_LABELS[tool]}")
+            timing_row: list[float] = []
+            miss_row: list[bool] = []
+            for visibility in visibility_values:
+                matching = [
+                    row
+                    for row in scenario_rows
+                    if int(row.get("sensor_visibility_percent") or 0) == visibility
+                ]
+                value = _mean_or_none([attack_relative_ttd(row, tool) for row in matching])
+                timing_row.append(math.nan if value is None else float(value))
+                miss_row.append(value is None)
+            matrix.append(timing_row)
+            misses.append(miss_row)
+
+    data = np.array(matrix, dtype=float)
+    if np.isnan(data).all():
+        return None
+
+    finite = data[np.isfinite(data)]
+    vmax = max(1.0, float(np.nanpercentile(finite, 95)))
+    fig, ax = plt.subplots(figsize=(13.4, 5.8))
+    cmap = plt.cm.YlOrRd.copy()
+    cmap.set_bad("#e7e5e4")
+    image = ax.imshow(np.ma.masked_invalid(data), aspect="auto", cmap=cmap, vmin=0.0, vmax=vmax)
+
+    ax.set_xticks(range(len(visibility_values)))
+    ax.set_xticklabels([str(value) for value in visibility_values], rotation=45, ha="right")
+    ax.set_yticks(range(len(row_labels)))
+    ax.set_yticklabels(row_labels)
+    ax.set_xlabel("Live sensor visibility (%)")
+    ax.set_title("Visibility Failure Frontier: Time To First Alert")
+    ax.grid(False)
+
+    for row_index, miss_row in enumerate(misses):
+        detected_columns = [idx for idx, missed in enumerate(miss_row) if not missed]
+        missed_columns = [idx for idx, missed in enumerate(miss_row) if missed]
+        for col_index in detected_columns:
+            value = data[row_index, col_index]
+            label = f"{value:.0f}" if value >= 10 else f"{value:.1f}"
+            ax.text(col_index, row_index, label, ha="center", va="center", fontsize=8, color="#1c1917")
+        for col_index in missed_columns:
+            ax.text(col_index, row_index, "miss", ha="center", va="center", fontsize=8, fontweight="bold", color="#7f1d1d")
+        if detected_columns and missed_columns:
+            boundary = max(missed_columns)
+            ax.axvline(boundary - 0.5, color="#78716c", linestyle=":", linewidth=1.0, alpha=0.7)
+
+    cbar = fig.colorbar(image, ax=ax, fraction=0.026, pad=0.02)
+    cbar.set_label("Attack-relative TTD (s)")
+    ax.text(
+        0.01,
+        -0.19,
+        "Cells show seconds to first alert; grey/miss cells mean the tool did not report the scenario at that visibility.",
+        transform=ax.transAxes,
+        fontsize=9,
+        color="#57534e",
+    )
+    return _save(fig, output_dir / "figure-40-visibility-time-to-detection-triptych.png", plt)
+
+
+def _plot_starvation_lease_fill(rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
+    campaign_rows = [
+        row
+        for row in rows
+        if str(row.get("scenario", "")) == "dhcp-starvation-rogue-dhcp"
+        and row.get("dhcp_starvation_workers") is not None
+    ]
+    if not campaign_rows:
+        return None
+
+    x_values = sorted({int(row.get("dhcp_starvation_workers") or 0) for row in campaign_rows})
+    attack_leases = []
+    total_taken = []
+    free_leases = []
+    full_times = []
+    pool_total = _mean_or_none([row.get("dhcp_pool_total") for row in campaign_rows])
+    for workers in x_values:
+        matching = [row for row in campaign_rows if int(row.get("dhcp_starvation_workers") or 0) == workers]
+        attack_leases.append(_mean_or_none([row.get("dhcp_attack_leases_max") for row in matching]))
+        total_taken.append(_mean_or_none([row.get("dhcp_pool_taken_max") for row in matching]))
+        free_leases.append(_mean_or_none([row.get("dhcp_pool_free_min") for row in matching]))
+        full_times.append(_mean_or_none([row.get("dhcp_pool_full_seconds_from_attack_start") for row in matching]))
+
+    fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(13.2, 5.0), gridspec_kw={"width_ratios": [1.18, 0.82]})
+    ax_left.plot(
+        x_values,
+        [value if value is not None else math.nan for value in full_times],
+        marker="o",
+        linewidth=2.4,
+        color="#9a3412",
+        label="Time until pool full",
+    )
+    ax_left.fill_between(
+        x_values,
+        [value if value is not None else math.nan for value in full_times],
+        color="#fed7aa",
+        alpha=0.45,
+    )
+    ax_left.set_xlabel("Parallel starvation workers")
+    ax_left.set_ylabel("Seconds from starvation start")
+    ax_left.set_title("Pool Exhaustion Speed")
+    ax_left.grid(True, axis="y", alpha=0.32)
+    ax_left.text(
+        0.02,
+        0.08,
+        "Lower is faster",
+        transform=ax_left.transAxes,
+        fontsize=9,
+        color="#7c2d12",
+        bbox={"boxstyle": "round,pad=0.25", "facecolor": "#ffedd5", "edgecolor": "none"},
+    )
+
+    width = 0.72
+    attack_pct = [
+        (value / pool_total * 100.0) if value is not None and pool_total else math.nan
+        for value in attack_leases
+    ]
+    free_pct = [
+        (value / pool_total * 100.0) if value is not None and pool_total else math.nan
+        for value in free_leases
+    ]
+    other_taken_pct = []
+    for attack_value, taken_value in zip(attack_leases, total_taken):
+        if attack_value is None or taken_value is None or not pool_total:
+            other_taken_pct.append(math.nan)
+        else:
+            other_taken_pct.append(max(0.0, (taken_value - attack_value) / pool_total * 100.0))
+    y_labels = [str(value) for value in x_values]
+    ax_right.barh(y_labels, attack_pct, height=width, color="#f97316", label="Spoofed-client leases")
+    ax_right.barh(y_labels, other_taken_pct, left=attack_pct, height=width, color="#fdba74", label="Other taken leases")
+    ax_right.barh(
+        y_labels,
+        free_pct,
+        left=[(a if math.isfinite(a) else 0.0) + (o if math.isfinite(o) else 0.0) for a, o in zip(attack_pct, other_taken_pct)],
+        height=width,
+        color="#d6d3d1",
+        label="Free leases",
+    )
+    ax_right.axvline(100, color="#991b1b", linestyle="--", linewidth=1.2)
+    ax_right.set_xlim(0, 105)
+    ax_right.set_xlabel("Lease pool share (%)")
+    ax_right.set_ylabel("Workers")
+    ax_right.set_title("Worst Observed Pool State")
+    ax_right.grid(True, axis="x", alpha=0.25)
+    if pool_total:
+        ax_right.text(0.02, 0.96, f"Pool size: {pool_total:.0f} leases", transform=ax_right.transAxes, fontsize=9, color="#57534e", va="top")
+    ax_right.legend(loc="upper center", bbox_to_anchor=(0.5, -0.14), ncol=3, fontsize=8)
+    fig.suptitle("DHCP Starvation Worker Scaling: Exhaustion Speed And Pool Pressure")
+    return _save(fig, output_dir / "figure-37-starvation-lease-fill-threshold.png", plt)
+
+
+def _plot_starvation_takeover_timing(rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
+    campaign_rows = [
+        row
+        for row in rows
+        if str(row.get("scenario", "")) == "dhcp-starvation-rogue-dhcp"
+        and row.get("dhcp_starvation_workers") is not None
+    ]
+    if not campaign_rows:
+        return None
+
+    worker_values = sorted({int(row.get("dhcp_starvation_workers") or 0) for row in campaign_rows})
+    y_positions = np.arange(len(worker_values))
+    pool_full = []
+    probe_end = []
+    takeover_success = []
+    for workers in worker_values:
+        matching = [row for row in campaign_rows if int(row.get("dhcp_starvation_workers") or 0) == workers]
+        pool_full.append(_mean_or_none([row.get("dhcp_pool_full_seconds_from_attack_start") for row in matching]))
+        probe_end.append(_mean_or_none([row.get("dhcp_takeover_seconds_from_rogue_start") for row in matching]))
+        takeover_success.append(any(bool(row.get("dhcp_takeover_success")) for row in matching))
+
+    fig, ax = plt.subplots(figsize=(12.0, 6.0))
+    for y, workers, full_at, finished_at, success in zip(y_positions, worker_values, pool_full, probe_end, takeover_success):
+        end = max(value for value in [full_at, finished_at, 70.0] if value is not None)
+        ax.hlines(y, 0, end, color="#e7e5e4", linewidth=8, zorder=1)
+        ax.scatter(0, y, marker="D", s=70, color="#0f766e", edgecolor="white", linewidth=0.8, zorder=3)
+        if finished_at is not None:
+            ax.scatter(
+                finished_at,
+                y,
+                marker="*" if success else "X",
+                s=145 if success else 95,
+                color="#16a34a" if success else "#dc2626",
+                edgecolor="white",
+                linewidth=0.8,
+                zorder=4,
+            )
+        if full_at is not None:
+            ax.scatter(full_at, y, marker="o", s=95, color="#f97316", edgecolor="#7c2d12", linewidth=0.9, zorder=5)
+            ax.text(full_at + 1.0, y + 0.13, f"{full_at:.0f}s", fontsize=8, color="#7c2d12")
+
+    ax.axvspan(0, 70, color="#fff7ed", alpha=0.65, zorder=0)
+    ax.axvline(0, color="#0f766e", linewidth=1.3, linestyle="--", alpha=0.85)
+    ax.axvline(70, color="#7c2d12", linewidth=1.1, linestyle=":", alpha=0.85)
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels([str(value) for value in worker_values])
+    ax.invert_yaxis()
+    ax.set_xlabel("Seconds from starvation/rogue phase start")
+    ax.set_ylabel("Parallel starvation workers")
+    ax.set_title("Rogue-DHCP Takeover Outcome Timeline")
+    ax.grid(True, axis="x", alpha=0.28)
+    ax.scatter([], [], marker="D", s=70, color="#0f766e", label="Rogue DHCP starts")
+    ax.scatter([], [], marker="o", s=95, color="#f97316", edgecolor="#7c2d12", label="Legitimate pool full")
+    ax.scatter([], [], marker="X", s=95, color="#dc2626", label="Victim renew probe ended without takeover")
+    ax.scatter([], [], marker="*", s=145, color="#16a34a", label="Victim takeover observed")
+    ax.legend(loc="lower right", fontsize=8)
+    ax.text(
+        0.01,
+        -0.13,
+        "The useful reading is the ordering: whether victim renew attempts finish before or after the legitimate lease pool is exhausted.",
+        transform=ax.transAxes,
+        fontsize=9,
+        color="#57534e",
+    )
+    return _save(fig, output_dir / "figure-38-starvation-takeover-timing.png", plt)
+
+
 def _plot_detector_semantic_composition(rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
     scenarios = _scenario_order(rows)
     if not scenarios:
@@ -247,15 +571,15 @@ def _plot_attack_relative_ttd_heatmap(rows: list[dict[str, Any]], output_dir: Pa
         scenario_rows = rows_for_scenario(rows, scenario)
         matrix.append([_mean_or_none([attack_relative_ttd(row, tool) for row in scenario_rows]) for tool in TOOL_ORDER])
     matrix_np = np.array([[np.nan if value is None else float(value) for value in row] for row in matrix], dtype=float)
-    fig, ax = plt.subplots(figsize=(7.1, 4.8))
+    fig, ax = plt.subplots(figsize=(7.2, max(4.8, len(scenarios) * 0.48)))
     cmap = plt.cm.YlOrRd.copy()
     cmap.set_bad(color="#f5f5f4")
     image = ax.imshow(matrix_np, cmap=cmap, aspect="auto")
     ax.set_xticks(range(len(TOOL_ORDER)))
-    ax.set_xticklabels([TOOL_LABELS[tool] for tool in TOOL_ORDER], rotation=20)
+    ax.set_xticklabels([TOOL_LABELS[tool] for tool in TOOL_ORDER], rotation=24, ha="right")
     ax.set_yticks(range(len(scenarios)))
-    ax.set_yticklabels(scenarios)
-    ax.set_title("Mean Attack-Relative Time-To-Detection")
+    ax.set_yticklabels([SCENARIO_LABELS.get(scenario, scenario) for scenario in scenarios])
+    ax.set_title("Mean Attack-Relative Time-To-Detection", fontweight="bold")
     for row_index in range(matrix_np.shape[0]):
         for col_index in range(matrix_np.shape[1]):
             value = matrix_np[row_index, col_index]
@@ -462,6 +786,7 @@ def _plot_wire_truth_packet_counts(rows: list[dict[str, Any]], output_dir: Path,
         ("arp_spoof", "ARP spoof", "#ef4444"),
         ("dns_spoof", "DNS spoof", "#7c3aed"),
         ("dhcp_spoof", "DHCP spoof", "#0f766e"),
+        ("dhcp_starvation", "DHCP starvation", "#b45309"),
         ("icmp_redirect", "ICMP redirect", "#2563eb"),
     ]
     bottoms = np.zeros(len(scenarios))
@@ -493,6 +818,7 @@ def _plot_wire_truth_packet_rates(rows: list[dict[str, Any]], output_dir: Path, 
         ("arp_spoof", "ARP spoof pps", "#ef4444"),
         ("dns_spoof", "DNS spoof pps", "#7c3aed"),
         ("dhcp_spoof", "DHCP spoof pps", "#0f766e"),
+        ("dhcp_starvation", "DHCP starvation pps", "#b45309"),
     ]
     width = 0.22
     fig, ax = plt.subplots(figsize=(max(9, len(labels) * 1.15), 5.0))
@@ -528,7 +854,7 @@ def _plot_sensor_vs_wire_volume(rows: list[dict[str, Any]], output_dir: Path, pl
             scenario_rows = rows_for_scenario(rows, scenario)
             ratios: list[float] = []
             for row in scenario_rows:
-                truth = float(row.get("ground_truth_attack_events") or 0)
+                truth = float(row.get("ground_truth_attacker_action_events") or row.get("ground_truth_attack_events") or 0)
                 alerts = float(row.get(tool_alert_field(tool)) or 0)
                 if truth > 0:
                     ratios.append(alerts / truth)
@@ -537,8 +863,8 @@ def _plot_sensor_vs_wire_volume(rows: list[dict[str, Any]], output_dir: Path, pl
     ax.axhline(1.0, color="#6b7280", linewidth=1.5, linestyle="--")
     ax.set_xticks(positions)
     ax.set_xticklabels(labels, rotation=28, ha="right")
-    ax.set_ylabel("Mean sensor alerts / wire packets")
-    ax.set_title("Sensor Volume Relative To Wire Truth")
+    ax.set_ylabel("Mean sensor alerts / ground-truth actions")
+    ax.set_title("Sensor Volume Relative To Action Truth")
     ax.legend(loc="upper right")
     return _save(fig, output_dir / "figure-27-sensor-vs-wire-volume.png", plt)
 
@@ -900,40 +1226,16 @@ def build_report_plots(rows: list[dict[str, Any]], output_dir: Path) -> tuple[di
 
     plots: dict[str, Path] = {}
     notes = [
-        "The report now mirrors the checked-in analysis notebook rather than a reduced report-only plot subset.",
-        "Timing views use attack-relative first alert time where appropriate, because supported timing for Zeek and Suricata can visually collapse to zero in the current evaluation export.",
-        "Representative run figures use a gray planned attack band and a red dashed line for first observed attack evidence.",
-        "Wire-truth figures come from the mirrored switch view and now include DHCP-focused scenarios alongside ARP and DNS attack families.",
+        "Timing views use attack-relative first alert time where appropriate.",
+        "Wire-truth figures come from the mirrored switch view.",
     ]
 
     builders = [
-        ("Results Overview / Detection Rate Matrix", _plot_detection_rate_matrix),
-        ("Results Overview / Detection Rate By Scenario", _plot_detection_rate_grouped_bars),
-        ("Results Overview / Mean Alert Volume By Scenario", _plot_mean_alert_volume),
-        ("Results Overview / Detector Semantic Alert Composition", _plot_detector_semantic_composition),
-        ("Detection And Timing / Mean Attack-Relative Time-To-Detection", _plot_attack_relative_ttd_heatmap),
-        ("Detection And Timing / Attack-Relative Detection-Time Distributions", _plot_attack_relative_ttd_distributions),
-        ("Detection And Timing / ECDF Of Attack-Relative Time To First Alert", _plot_attack_relative_ttd_ecdf),
-        ("Detection And Timing / First-Alert Winner Count", _plot_first_alert_winner_count),
-        ("Detection And Timing / Detector Recovery Timing", _plot_detector_recovery_timing),
-        ("Operational Impact / Victim-Side Operational Metrics", _plot_operational_metrics),
-        ("Operational Impact / Relative Change Versus Baseline", _plot_relative_change_vs_baseline),
-        ("Operational Impact / Distribution Shape Of Operational Metrics", _plot_distribution_shape),
-        ("Wire Truth / Packet Counts By Scenario", _plot_wire_truth_packet_counts),
-        ("Wire Truth / Attack Packet Rates", _plot_wire_truth_packet_rates),
-        ("Wire Truth / Sensor Volume Relative To Wire Truth", _plot_sensor_vs_wire_volume),
-        ("Representative Run / Attack-Type Alert Counts", _plot_representative_attack_type_counts),
-        ("Representative Run / Timeline", _plot_representative_timeline),
-        ("Representative Run / Probe Trace", _plot_representative_probe_trace),
-        ("Representative Run / Curl Timeline", _plot_representative_curl_timeline),
-        ("Representative Run / Detector State Flags", _plot_detector_state_flags),
-        ("Representative Run / Detector Event Raster", _plot_detector_event_raster),
-        ("Detector Event Forensics / Mean Detector Semantic Counts", _plot_mean_detector_semantic_counts),
-        ("Detector Event Forensics / Detector Packet Alerts By Scenario", _plot_detector_packet_alerts_by_scenario),
-        ("Detector Event Forensics / Share Of Runs With Each Detector Event", _plot_share_of_runs_with_events),
-        ("Detector Event Forensics / Restoration Ordering In Mitigation Runs", _plot_restoration_ordering),
-        ("Visual Atlas / Normalized Scenario Metric Profile", _plot_normalized_scenario_metric_profile),
-        ("Visual Atlas / Operational Overhead Lollipop Comparison", _plot_operational_overhead_lollipop),
+        ("Detection Timing / Mean Attack-Relative Time-To-Detection", _plot_attack_relative_ttd_heatmap),
+        ("Visibility / Event Recall vs Visibility", _plot_visibility_event_recall_triptych),
+        ("Visibility / Time-To-Detection vs Visibility", _plot_visibility_ttd_triptych),
+        ("DHCP Starvation / Lease Fill Threshold", _plot_starvation_lease_fill),
+        ("DHCP Starvation / Takeover Timing", _plot_starvation_takeover_timing),
     ]
 
     for title, builder in builders:

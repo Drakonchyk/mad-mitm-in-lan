@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+USER_PCAP_RETENTION_POLICY="${PCAP_RETENTION_POLICY-}"
+USER_PCAP_ENABLE="${PCAP_ENABLE-}"
+USER_GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE-}"
+USER_PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE-}"
+
 # shellcheck source=/dev/null
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../experiment-common.sh"
 
@@ -8,13 +13,14 @@ EXPERIMENT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 WARMUP_RUNS="${WARMUP_RUNS:-1}"
 MEASURED_RUNS="${MEASURED_RUNS:-5}"
-SUPPLEMENTARY_SCENARIOS="${SUPPLEMENTARY_SCENARIOS:-intermittent-arp-mitm-dns intermittent-dhcp-spoof dhcp-offer-only noisy-benign-baseline reduced-observability}"
-PCAP_RETENTION_POLICY="${PCAP_RETENTION_POLICY:-none}"
-PCAP_ENABLE="${PCAP_ENABLE:-1}"
-GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE:-0}"
-PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE:-0}"
+SUPPLEMENTARY_SCENARIOS="${SUPPLEMENTARY_SCENARIOS:-dhcp-starvation-rogue-dhcp}"
+PCAP_RETENTION_POLICY="${USER_PCAP_RETENTION_POLICY:-none}"
+PCAP_ENABLE="${USER_PCAP_ENABLE:-1}"
+GUEST_PCAP_ENABLE="${USER_GUEST_PCAP_ENABLE:-0}"
+PCAP_SUMMARIES_ENABLE="${USER_PCAP_SUMMARIES_ENABLE:-0}"
 IPERF_ENABLE="${IPERF_ENABLE:-0}"
 POST_ATTACK_SETTLE_SECONDS="${POST_ATTACK_SETTLE_SECONDS:-0}"
+DHCP_STARVATION_WORKERS="${DHCP_STARVATION_WORKERS:-1}"
 REMOTE_ROOT="$(research_workspace_root)"
 PLAN_SKIP_RUNS=0
 PLAN_START_RUN=1
@@ -91,6 +97,10 @@ run_window() {
   local attack_cmd="${12}"
   local aux_cmd="${13}"
   local packet_sample_rate="${14}"
+  local post_cleanup_host="${15:-}"
+  local post_cleanup_label="${16:-post-cleanup}"
+  local post_cleanup_cmd="${17:-}"
+  local post_cleanup_use_sudo="${18:-0}"
 
   info "Supplementary run: scenario=${scenario} run_index=${run_index} warmup=${warmup}"
   SKIP_LAB_START="1" \
@@ -102,6 +112,10 @@ run_window() {
   AUX_JOB_LABEL="${scenario}-aux" \
   AUX_JOB_CMD="${aux_cmd}" \
   AUX_JOB_USE_SUDO="$([[ -n "${aux_cmd}" ]] && printf '1' || printf '0')" \
+  POST_CLEANUP_HOST="${post_cleanup_host}" \
+  POST_CLEANUP_LABEL="${post_cleanup_label}" \
+  POST_CLEANUP_CMD="${post_cleanup_cmd}" \
+  POST_CLEANUP_USE_SUDO="${post_cleanup_use_sudo}" \
   PLAN_RUN_INDEX="${run_index}" \
   PLAN_WARMUP="${warmup}" \
   PLAN_DURATION_SECONDS="${duration}" \
@@ -111,6 +125,8 @@ run_window() {
   PLAN_FORWARDING_ENABLED="${forwarding_enabled}" \
   PLAN_DNS_SPOOF_ENABLED="${dns_spoof_enabled}" \
   PLAN_SPOOFED_DOMAINS="${spoofed_domains}" \
+  RUN_SLUG_SUFFIX="param-workers-${DHCP_STARVATION_WORKERS}" \
+  DHCP_STARVATION_WORKERS="${DHCP_STARVATION_WORKERS}" \
   DETECTOR_PACKET_SAMPLE_RATE="${packet_sample_rate}" \
   PCAP_ENABLE="${PCAP_ENABLE}" \
   GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE}" \
@@ -126,90 +142,48 @@ run_scenario() {
   local warmup="$3"
 
   case "${scenario}" in
-    intermittent-arp-mitm-dns)
+    dhcp-starvation-rogue-dhcp)
       run_window \
-        "intermittent-arp-mitm-dns" \
+        "dhcp-starvation-rogue-dhcp" \
         "90" \
-        "Supplementary pulsed ARP MITM with focused DNS spoofing for iana.org" \
-        "${run_index}" \
-        "${warmup}" \
-        "10" \
-        "60" \
-        "" \
-        "1" \
-        "1" \
-        "iana.org" \
-        "sleep 10; cd '${REMOTE_ROOT}' && for pulse in 1 2 3 4; do timeout -s INT 5 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --enable-forwarding --domains iana.org || true; if [[ \"\$pulse\" -lt 4 ]]; then sleep 10; fi; done" \
-        "" \
-        "1"
-      ;;
-    intermittent-dhcp-spoof)
-      run_window \
-        "intermittent-dhcp-spoof" \
-        "90" \
-        "Supplementary pulsed rogue DHCP spoofing to test short attack windows" \
-        "${run_index}" \
-        "${warmup}" \
-        "10" \
-        "60" \
-        "" \
-        "0" \
-        "0" \
-        "" \
-        "sleep 10; cd '${REMOTE_ROOT}' && for pulse in 1 2 3 4; do timeout -s INT 5 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf dhcp-spoof --interface vnic0 --interval 1.0 || true; if [[ \"\$pulse\" -lt 4 ]]; then sleep 10; fi; done" \
-        "" \
-        "1"
-      ;;
-    dhcp-offer-only)
-      run_window \
-        "dhcp-offer-only" \
-        "60" \
-        "Supplementary rogue DHCP offers without ACK to test early-stage server detection" \
-        "${run_index}" \
-        "${warmup}" \
-        "10" \
-        "50" \
-        "" \
-        "0" \
-        "0" \
-        "" \
-        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 40 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf dhcp-spoof --interface vnic0 --interval 2.0 --no-ack" \
-        "" \
-        "1"
-      ;;
-    noisy-benign-baseline)
-      run_window \
-        "noisy-benign-baseline" \
-        "90" \
-        "Supplementary benign LAN churn with neighbor refreshes and extra DNS traffic" \
-        "${run_index}" \
-        "${warmup}" \
-        "" \
-        "" \
-        "" \
-        "0" \
-        "0" \
-        "" \
-        "" \
-        "sleep 10; end=\$(( \$(date +%s) + 50 )); while [[ \$(date +%s) -lt \"\$end\" ]]; do sudo ip neigh del '${GATEWAY_IP}' dev vnic0 2>/dev/null || true; ping -c 1 -W 1 '${GATEWAY_IP}' >/dev/null 2>&1 || true; for domain in ${DETECTOR_DOMAINS}; do dig +time=1 +tries=1 +short A \"\$domain\" @'${DNS_SERVER}' >/dev/null 2>&1 || true; done; curl -sS -o /dev/null https://example.com || true; sleep 8; done" \
-        "1"
-      ;;
-    reduced-observability)
-      run_window \
-        "reduced-observability" \
-        "90" \
-        "Supplementary ARP MITM with focused DNS spoofing while the detector samples only part of the observed traffic" \
+        "Supplementary DHCP starvation followed by rogue DHCP replies to stress pool exhaustion plus attacker takeover" \
         "${run_index}" \
         "${warmup}" \
         "10" \
         "70" \
         "" \
-        "1" \
-        "1" \
-        "iana.org" \
-        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 60 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --enable-forwarding --domains iana.org" \
+        "0" \
+        "0" \
         "" \
-        "0.25"
+        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 60 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf dhcp-starvation --interface vnic0 --interval 0.2 --request-timeout 5.0 --workers ${DHCP_STARVATION_WORKERS}" \
+        "sleep 30; cd '${REMOTE_ROOT}' && exec timeout -s INT 40 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf dhcp-spoof --interface vnic0 --interval 2.0" \
+        "1" \
+        "gateway" \
+        "dhcp-starvation-cleanup" \
+        "python3 - '${DHCP_STARVATION_MAC_PREFIX,,}' <<'PY'
+from pathlib import Path
+import sys
+prefix = sys.argv[1].lower()
+changed = False
+for candidate in (Path('/var/lib/misc/dnsmasq.leases'), Path('/var/lib/dhcp/dnsmasq.leases')):
+    if not candidate.exists():
+        continue
+    kept = []
+    for raw_line in candidate.read_text(encoding='utf-8', errors='replace').splitlines():
+        parts = raw_line.split()
+        if len(parts) >= 2 and parts[1].lower().startswith(prefix):
+            changed = True
+            continue
+        kept.append(raw_line)
+    if changed:
+        candidate.write_text(('\\n'.join(kept) + '\\n') if kept else '', encoding='utf-8')
+if changed:
+    print(f'purged DHCP starvation leases for prefix {prefix}')
+else:
+    print(f'no DHCP starvation leases found for prefix {prefix}')
+PY
+systemctl restart dnsmasq" \
+        "1"
       ;;
     *)
       warn "Unknown supplementary scenario: ${scenario}"

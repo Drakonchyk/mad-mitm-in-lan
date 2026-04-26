@@ -16,8 +16,7 @@ The project automates:
 - repeatable scenario execution for the main experiment set;
 - supplementary stress scenarios for extra analysis;
 - collection of the per-run artifacts needed for plots and interpretation;
-- dataset export, tables, and figures for the main, supplementary, and demo reports.
-- checked-in Jupyter notebooks for prettier exploratory analysis and PCAP walkthroughs.
+- dataset export, tables, and figures for the combined experiment report.
 
 Useful companion docs:
 
@@ -41,6 +40,8 @@ The main attack families modeled here are:
 - transparent ARP MITM with forwarding enabled;
 - ARP MITM plus focused DNS spoofing;
 - focused rogue DHCP server advertisement on the LAN;
+- DHCP starvation using spoofed client identities;
+- DHCP lease-pool flooding with optional rogue DHCP takeover;
 - mitigation and recovery after the victim restores the legitimate gateway neighbor entry.
 
 This is a research testbed, not a production hardening framework.
@@ -83,13 +84,15 @@ Main evaluation scenarios:
 - `arp-poison-no-forward`
 - `arp-mitm-forward`
 - `arp-mitm-dns`
+- `dhcp-spoof`
+- `dhcp-starvation`
 - `mitigation-recovery`
 
 Supplementary scenarios:
 
-- `intermittent-arp-mitm-dns`
-- `noisy-benign-baseline`
-- `reduced-observability`
+- `dhcp-starvation-rogue-dhcp`
+- `visibility-arp-mitm-dns`
+- `visibility-dhcp-spoof`
 
 The explanatory experiment overview is in [docs/experiments.md](docs/experiments.md), and the exact timing windows are in [docs/scenario-definitions.md](docs/scenario-definitions.md).
 
@@ -136,23 +139,13 @@ PCAP_ENABLE=0 make baseline
 
 ## Demo Path
 
-The repo has one compact demo path that mirrors the retained sample dataset:
+The repo has one compact browser dashboard for live runs:
 
 ```bash
-make demo-start
-make demo-scenario
 make demo-ui
-make demo-report
-make demo-capture HOST=sensor IFACE=mitm-sensor0 FILTER="arp or icmp or port 53 or port 67 or port 68"
 ```
 
-What these do:
-
-- `make demo-start`: provisions the lab if needed and ensures it is running;
-- `make demo-scenario`: runs the focused `arp-mitm-dns` scenario used as the canonical live demo path;
-- `make demo-ui`: starts a localhost control-room style dashboard on `http://127.0.0.1:8765/` with live detector/Zeek/Suricata status, recent events, scenario buttons, and a Wireshark launcher;
-- `make demo-report`: builds a small deterministic report from at most one retained measured run per scenario into `results/demo-report/`;
-- `make demo-capture`: opens a live `tcpdump` stream on a chosen VM or on the mirrored switch sensor port until `Ctrl-C`.
+`make demo-ui` starts a localhost control-room style dashboard on `http://127.0.0.1:8765/` with live lab health, DHCP pool status, detector/Zeek/Suricata status, recent events, scenario buttons, and a Wireshark launcher.
 
 The dashboard itself now starts under sudo so the browser controls can launch lab actions reliably:
 
@@ -178,8 +171,7 @@ Top-level layout:
 - `shell/lab/`: lab lifecycle and provisioning scripts;
 - `shell/experiments/`: experiment-plan and scenario-window orchestration;
 - `shell/scenarios/`: direct automated scenario helpers;
-- `shell/tools/`: live-capture and demo-report helpers;
-- `notebooks/`: checked-in Jupyter notebooks for interactive result exploration and PCAP forensics;
+- `shell/tools/`: operator helper scripts;
 - `python/lab/`: template rendering and shell-facing Python helpers;
 - `python/detector/`: detector runtime sources;
 - `python/mitm/`: attacker-side MITM automation and scenario entry points;
@@ -233,17 +225,6 @@ make experiment-report
 
 `make experiment-report` now builds one combined report from all non-warmup runs found under `results/`, including the former supplementary scenarios, so a separate extra-report command is no longer needed.
 
-Notebook exploration flow:
-
-```bash
-python3 -m pip install --user notebook ipykernel
-jupyter notebook notebooks/
-```
-
-The checked-in notebook is:
-
-- `analysis.ipynb`: the full interactive analysis flow in one place, including high-level comparisons, timing, operational impact, representative-run deep dives, detector-event forensics, PCAP views backed by `tshark`, and extra thesis-friendly summary plots.
-
 The notebook prints the exact `wireshark` command for the selected capture file and keeps its plotting code inside the notebook instead of relying on a shared notebook support module.
 
 Resume or trim a plan:
@@ -252,7 +233,7 @@ Resume or trim a plan:
 make experiment-plan ARGS="--skip 2"
 make experiment-plan ARGS="--start 11"
 make experiment-plan ARGS="--skip-scenario baseline"
-make experiment-plan-extra ARGS="--start-scenario noisy-benign-baseline"
+make experiment-plan-extra ARGS="--start-scenario dhcp-starvation-rogue-dhcp"
 ```
 
 Single-scenario commands with the canonical names:
@@ -262,12 +243,14 @@ make scenario-arp-poison-no-forward
 make scenario-arp-mitm-forward
 make scenario-arp-mitm-dns
 make scenario-dhcp-spoof
-make scenario-intermittent-dhcp-spoof
-make scenario-dhcp-offer-only
+make scenario-dhcp-starvation WORKERS=1
+make scenario-dhcp-starvation-rogue-dhcp WORKERS=1 TAKEOVER=1
+make scenario-visibility-arp-mitm-dns VISIBILITY=100
+make scenario-visibility-dhcp-spoof VISIBILITY=100
 make scenario-mitigation-recovery
 ```
 
-The main experiment plan now includes `dhcp-spoof`, and the supplementary plan adds `intermittent-dhcp-spoof` plus `dhcp-offer-only` for short-burst and offer-only DHCP behavior.
+The main experiment plan now includes `dhcp-spoof` and `dhcp-starvation`. For DHCP worker scaling, use `make starvation-takeover-plan`: every worker level runs starvation, records real dnsmasq lease occupancy once per second, and can optionally run reactive rogue DHCP takeover probes with `TAKEOVER_ENABLE=1`. Use `TAKEOVER_ENABLE=0` for lease-pool flood only. The visibility campaign is available through `make visibility-plan`; it runs ARP/DNS and DHCP spoofing while reducing the live sensor feed received by Detector, Zeek, and Suricata.
 
 The generated markdown report now includes a detection-summary section with TP, FP, TN, FN, TPR, FPR, precision, and F1, so the main workflow does not need a separate `make evaluate` command.
 
@@ -291,14 +274,14 @@ Typically committed:
 
 - source code under `python/`, `shell/`, and `config/`;
 - docs under `docs/`;
-- a small retained sample dataset and demo-report-friendly structure.
+- a small retained sample dataset.
 
 Generated locally:
 
 - `generated/` cloud-init and helper assets;
 - `storage/` VM disks and downloaded base images;
 - full `results/` trees from repeated experiments;
-- regenerated report directories such as `results/experiment-report/` and `results/demo-report/`.
+- regenerated report directories such as `results/experiment-report/`.
 
 ## Day-To-Day Commands
 
@@ -312,7 +295,19 @@ make smoke-test
 make summarize
 make experiment-plan
 make experiment-plan-extra
+make visibility-plan
+make starvation-takeover-plan
 make experiment-report
-make demo-report
+make demo-ui
 make destroy
 ```
+
+Focused pipeline examples:
+
+```bash
+make scenario-dhcp-starvation DURATION=20 WORKERS=1
+make scenario-dhcp-starvation-rogue-dhcp DURATION=90 WORKERS=32 TAKEOVER=1
+WARMUP_RUNS=0 MEASURED_RUNS=10 PLAN_SCENARIOS="dhcp-starvation" make experiment-plan
+```
+
+The last command runs exactly 10 measured DHCP-starvation repetitions through the main experiment pipeline, with no warm-up run. If you want the normal pipeline shape with one warm-up first, set `WARMUP_RUNS=1` instead.

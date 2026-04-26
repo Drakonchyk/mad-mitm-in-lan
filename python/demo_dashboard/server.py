@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import threading
 from contextlib import suppress
@@ -22,6 +23,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 GENERATED_DIR = REPO_ROOT / "generated" / "demo-ui"
 JOB_LOG_DIR = GENERATED_DIR / "logs"
+REPORT_DOWNLOAD_ZIP = GENERATED_DIR / "experiment-report.zip"
+LATEST_RUN_DOWNLOAD_ZIP = GENERATED_DIR / "latest-run.zip"
 ROOT_MODE = os.geteuid() == 0
 DEMO_REAL_USER = os.environ.get("DEMO_REAL_USER") or ""
 DEMO_REAL_GROUP = os.environ.get("DEMO_REAL_GROUP") or ""
@@ -41,8 +44,10 @@ SCENARIO_SCRIPTS = {
     "arp-mitm-forward": REPO_ROOT / "shell/scenarios/record-arp-mitm-forward.sh",
     "arp-mitm-dns": REPO_ROOT / "shell/scenarios/record-arp-mitm-dns.sh",
     "dhcp-spoof": REPO_ROOT / "shell/scenarios/record-dhcp-spoof.sh",
-    "intermittent-dhcp-spoof": REPO_ROOT / "shell/scenarios/record-intermittent-dhcp-spoof.sh",
-    "dhcp-offer-only": REPO_ROOT / "shell/scenarios/record-dhcp-offer-only.sh",
+    "dhcp-starvation": REPO_ROOT / "shell/scenarios/record-dhcp-starvation.sh",
+    "dhcp-starvation-rogue-dhcp": REPO_ROOT / "shell/scenarios/record-dhcp-starvation-rogue-dhcp.sh",
+    "visibility-arp-mitm-dns": REPO_ROOT / "shell/scenarios/record-visibility-arp-mitm-dns.sh",
+    "visibility-dhcp-spoof": REPO_ROOT / "shell/scenarios/record-visibility-dhcp-spoof.sh",
     "mitigation-recovery": REPO_ROOT / "shell/scenarios/record-mitigation-recovery.sh",
 }
 
@@ -51,12 +56,14 @@ DEMO_SCENARIOS = [
     "arp-mitm-forward",
     "arp-mitm-dns",
     "dhcp-spoof",
-    "intermittent-dhcp-spoof",
-    "dhcp-offer-only",
+    "dhcp-starvation",
+    "dhcp-starvation-rogue-dhcp",
+    "visibility-arp-mitm-dns",
+    "visibility-dhcp-spoof",
     "mitigation-recovery",
 ]
 
-FEATURED_SCENARIOS = {"arp-mitm-dns", "dhcp-spoof", "dhcp-offer-only"}
+FEATURED_SCENARIOS = {"arp-mitm-dns", "dhcp-spoof", "dhcp-starvation", "dhcp-starvation-rogue-dhcp", "visibility-arp-mitm-dns", "visibility-dhcp-spoof"}
 
 
 def load_lab_constants() -> dict[str, str]:
@@ -90,6 +97,22 @@ def clamp_duration(raw: Any) -> int:
     except (TypeError, ValueError):
         value = 20
     return max(5, min(60, value))
+
+
+def clamp_visibility(raw: Any) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 100
+    return max(0, min(100, value))
+
+
+def clamp_workers(raw: Any) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 1
+    return max(1, min(108, value))
 
 
 def load_json_file(path: Path) -> dict[str, Any] | None:
@@ -176,7 +199,8 @@ def summarize_detector_entry(entry: dict[str, Any]) -> str:
         return (
             f"Heartbeat: arp={entry.get('arp_spoof_packets_seen', 0)} "
             f"dns={entry.get('dns_spoof_packets_seen', 0)} "
-            f"dhcp={entry.get('rogue_dhcp_packets_seen', 0)}"
+            f"dhcp={entry.get('rogue_dhcp_packets_seen', 0)} "
+            f"starvation={entry.get('dhcp_starvation_packets_seen', 0)}"
         )
     if event == "dhcp_offer_seen":
         return (
@@ -190,6 +214,16 @@ def summarize_detector_entry(entry: dict[str, Any]) -> str:
         )
     if event == "rogue_dhcp_server_seen":
         return f"Rogue DHCP server {entry.get('dhcp_server')} ({entry.get('dhcp_server_mac')})"
+    if event == "dhcp_starvation_seen":
+        return (
+            f"DHCP starvation suspected: {entry.get('unique_client_count')} unique clients "
+            f"in {entry.get('window_seconds')}s"
+        )
+    if event == "dhcp_starvation_packet_seen":
+        return (
+            f"DHCP {entry.get('message_type')} from {entry.get('client_mac')} "
+            f"(unique clients={entry.get('unique_client_count')})"
+        )
     if event == "gateway_mac_changed":
         return f"Gateway MAC changed to {entry.get('gateway_mac')}"
     if event == "multiple_gateway_macs_seen":
@@ -281,6 +315,7 @@ def detector_status() -> dict[str, Any]:
     arp_count = sum(1 for entry in records if entry.get("event") == "arp_spoof_packet_seen")
     dns_count = sum(1 for entry in records if entry.get("event") == "dns_spoof_packet_seen")
     dhcp_count = sum(1 for entry in records if entry.get("event") in {"dhcp_offer_seen", "dhcp_ack_seen"})
+    starvation_count = sum(1 for entry in records if entry.get("event") == "dhcp_starvation_packet_seen")
     recent = interesting_detector_entries(limit=1)
     return {
         "name": "Detector",
@@ -293,6 +328,7 @@ def detector_status() -> dict[str, Any]:
             "arp_spoof": arp_count,
             "dns_spoof": dns_count,
             "dhcp_spoof": dhcp_count,
+            "dhcp_starvation": starvation_count,
         },
         "known_victim_ip": state.get("known_victim_ip"),
         "known_attacker_ip": state.get("known_attacker_ip"),
@@ -302,7 +338,7 @@ def detector_status() -> dict[str, Any]:
 def zeek_status() -> dict[str, Any]:
     pid = read_pid(ZEEK_PID)
     records = load_jsonl_all(ZEEK_LOG)
-    counts = {"arp_spoof": 0, "dns_spoof": 0, "dhcp_spoof": 0}
+    counts = {"arp_spoof": 0, "dns_spoof": 0, "dhcp_spoof": 0, "dhcp_starvation": 0}
     for entry in records:
         note = entry.get("note")
         if note == "MITMLab::ARP_Spoof":
@@ -311,6 +347,8 @@ def zeek_status() -> dict[str, Any]:
             counts["dns_spoof"] += 1
         elif note == "MITMLab::DHCP_Spoof":
             counts["dhcp_spoof"] += 1
+        elif note == "MITMLab::DHCP_Starvation":
+            counts["dhcp_starvation"] += 1
     recent = interesting_zeek_entries(limit=1)
     return {
         "name": "Zeek",
@@ -327,7 +365,7 @@ def suricata_status() -> dict[str, Any]:
     attacker_mac = LAB_CONSTANTS.get("ATTACKER_MAC", "").lower()
     gateway_ip = LAB_CONSTANTS.get("GATEWAY_IP", "")
     records = load_jsonl_all(SURICATA_LOG, max_bytes=2 * 1024 * 1024)
-    counts = {"arp_spoof": 0, "dns_spoof": 0, "dhcp_spoof": 0}
+    counts = {"arp_spoof": 0, "dns_spoof": 0, "dhcp_spoof": 0, "dhcp_starvation": 0}
     for entry in records:
         event_type = entry.get("event_type")
         if event_type == "alert":
@@ -336,6 +374,8 @@ def suricata_status() -> dict[str, Any]:
                 counts["dns_spoof"] += 1
             elif "rogue DHCP reply from attacker" in signature:
                 counts["dhcp_spoof"] += 1
+            elif "DHCP starvation" in signature:
+                counts["dhcp_starvation"] += 1
         elif event_type == "arp":
             arp = entry.get("arp", {})
             if (
@@ -361,8 +401,10 @@ def pretty_label(name: str) -> str:
         "arp-mitm-forward": "ARP MITM",
         "arp-mitm-dns": "ARP + DNS MITM",
         "dhcp-spoof": "DHCP Spoof",
-        "intermittent-dhcp-spoof": "Pulsed DHCP Spoof",
-        "dhcp-offer-only": "DHCP Offer Only",
+        "dhcp-starvation": "DHCP Starvation",
+        "dhcp-starvation-rogue-dhcp": "Starvation + Rogue DHCP",
+        "visibility-arp-mitm-dns": "Visibility ARP + DNS",
+        "visibility-dhcp-spoof": "Visibility DHCP",
         "mitigation-recovery": "Mitigation Recovery",
     }
     return custom.get(name, name.replace("-", " ").title())
@@ -416,7 +458,6 @@ def latest_result_summary(result_dir: Path | None) -> dict[str, Any] | None:
     payload.update(
         {
             "scenario": evaluation.get("scenario"),
-            "ground_truth_source": evaluation.get("ground_truth_source"),
             "ground_truth_attack_events": evaluation.get("ground_truth_attack_events"),
             "ground_truth_attack_types": evaluation.get("ground_truth_attack_types", {}),
             "ground_truth_arp_spoof_direction_counts": evaluation.get("ground_truth_arp_spoof_direction_counts", {}),
@@ -699,9 +740,43 @@ def run_action(payload: dict[str, Any]) -> dict[str, Any]:
             "message": (proc.stdout or "").strip() or ("Wireshark launched" if proc.returncode == 0 else "Failed to launch Wireshark"),
         }
 
+    if action == "update_report":
+        JOB_MANAGER.refresh()
+        state = JOB_MANAGER.state()
+        if state.get("active"):
+            raise RuntimeError("Wait for the running scenario to finish before rebuilding the report.")
+        output_dir = REPO_ROOT / "results" / "experiment-report"
+        proc = subprocess.run(
+            ["python3", "-m", "reporting.cli", "results", "--profile", "all", "--output-dir", str(output_dir)],
+            cwd=REPO_ROOT,
+            env={**os.environ, "PYTHONPATH": "./python"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return {"ok": False, "message": (proc.stdout or "Report build failed").strip()}
+        ensure_generated_dirs()
+        REPORT_DOWNLOAD_ZIP.unlink(missing_ok=True)
+        archive_base = REPORT_DOWNLOAD_ZIP.with_suffix("")
+        shutil.make_archive(str(archive_base), "zip", root_dir=output_dir)
+        normalize_owned_path(output_dir)
+        normalize_owned_path(REPORT_DOWNLOAD_ZIP)
+        return {
+            "ok": True,
+            "message": "Report updated.",
+            "report_dir": str(output_dir),
+            "download_url": "/api/download/experiment-report.zip",
+        }
+
     if action == "run_scenario":
         scenario = str(payload.get("scenario") or "").strip()
         duration = clamp_duration(payload.get("duration"))
+        visibility = clamp_visibility(payload.get("visibility"))
+        workers = clamp_workers(payload.get("workers"))
+        takeover_enabled = bool(payload.get("takeover_enabled", True))
         script_path = SCENARIO_SCRIPTS.get(scenario)
         if not script_path:
             return {"ok": False, "message": f"Unknown scenario: {scenario}"}
@@ -710,8 +785,21 @@ def run_action(payload: dict[str, Any]) -> dict[str, Any]:
             "IPERF_ENABLE=0",
             "POST_ATTACK_SETTLE_SECONDS=0",
             "KEEP_DEBUG_ARTIFACTS=0",
+            "PCAP_ENABLE=1",
+            "GUEST_PCAP_ENABLE=0",
+            "PCAP_SUMMARIES_ENABLE=0",
+            "PCAP_RETENTION_POLICY=first-run-per-scenario",
+            f"SENSOR_VISIBILITY_PERCENT={visibility}",
+            f"DHCP_STARVATION_WORKERS={workers}",
+            f"TAKEOVER_ENABLE={1 if takeover_enabled else 0}",
         ]
-        inner = " ".join(env_parts + [shlex.quote(str(script_path)), shlex.quote(str(duration))])
+        script_args = [shlex.quote(str(script_path)), shlex.quote(str(duration))]
+        if scenario.startswith("visibility-"):
+            script_args.append(shlex.quote(str(visibility)))
+        elif scenario == "dhcp-starvation-rogue-dhcp":
+            script_args.append(shlex.quote(str(workers)))
+            script_args.append(shlex.quote("1" if takeover_enabled else "0"))
+        inner = " ".join(env_parts + script_args)
         JOB_MANAGER.start(
             kind="scenario",
             label=label,
@@ -746,6 +834,45 @@ class DemoRequestHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/status":
             self._send_json(build_status_payload())
+            return
+        if parsed.path == "/api/download/experiment-report.zip":
+            if not REPORT_DOWNLOAD_ZIP.exists():
+                self._send_json({"ok": False, "message": "Build the report first."}, status=HTTPStatus.NOT_FOUND)
+                return
+            data = REPORT_DOWNLOAD_ZIP.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", 'attachment; filename="experiment-report.zip"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            with suppress(BrokenPipeError, ConnectionResetError):
+                self.wfile.write(data)
+            return
+        if parsed.path == "/api/download/latest-run.zip":
+            state = JOB_MANAGER.state()
+            last = state.get("last_completed") or {}
+            run_path = Path(str(last.get("artifacts_path") or "")) if last.get("artifacts_path") else newest_result_dir()
+            if not run_path or not run_path.exists():
+                self._send_json({"ok": False, "message": "No completed run is available yet."}, status=HTTPStatus.NOT_FOUND)
+                return
+            resolved = run_path.resolve()
+            results_root = (REPO_ROOT / "results").resolve()
+            if results_root not in resolved.parents:
+                self._send_json({"ok": False, "message": "Refusing to package a path outside results/."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            ensure_generated_dirs()
+            LATEST_RUN_DOWNLOAD_ZIP.unlink(missing_ok=True)
+            archive_base = LATEST_RUN_DOWNLOAD_ZIP.with_suffix("")
+            shutil.make_archive(str(archive_base), "zip", root_dir=resolved)
+            normalize_owned_path(LATEST_RUN_DOWNLOAD_ZIP)
+            data = LATEST_RUN_DOWNLOAD_ZIP.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", f'attachment; filename="{resolved.name}.zip"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            with suppress(BrokenPipeError, ConnectionResetError):
+                self.wfile.write(data)
             return
         if parsed.path.startswith("/api/logs/"):
             source = parsed.path.rsplit("/", 1)[-1]

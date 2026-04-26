@@ -20,22 +20,16 @@ help:
 		'                 Run the main diploma experiment plan with optional skip/start controls' \
 		'  make experiment-plan-extra ARGS="--skip 1"' \
 		'                 Run supplementary scenarios separately from the main thesis dataset' \
+		'  make visibility-plan' \
+		'                 Run the automated packet-visibility degradation campaign' \
+		'  make starvation-takeover-plan' \
+		'                 Run DHCP starvation worker scaling with lease logging and rogue-DHCP takeover probes' \
 		'  make experiment-report' \
 		'                 Build one combined report from all runs under results/' \
 		'  make experiment-report-extra' \
 		'                 Compatibility alias for make experiment-report' \
-		'  make demo-start' \
-		'                 Provision if needed and ensure the demo lab is up' \
-		'  make demo-scenario DURATION=90' \
-		'                 Run one focused arp-mitm-dns demo scenario (detector always on, comparators on by default)' \
-		'  make demo-capture HOST=sensor IFACE=mitm-sensor0 FILTER="arp or icmp or port 53 or port 67 or port 68"' \
-		'                 Open a live tcpdump capture on the mirrored switch port or on a lab VM' \
 		'  make demo-ui PORT=8765' \
 		'                 Open the localhost thesis demo dashboard with live status, logs, and scenario buttons' \
-		'  make demo-report' \
-		'                 Build a small deterministic report from the latest retained run per scenario' \
-		'  make scenario-help' \
-		'                 Show the direct automated scenario commands' \
 		'  make scenario-verify' \
 		'                 Verify the isolated lab before an automated scenario run' \
 		'  make scenario-arp-poison-no-forward DURATION=90' \
@@ -46,14 +40,12 @@ help:
 		'                 Run the canonical focused arp-mitm-dns scenario used in the plan' \
 		'  make scenario-dhcp-spoof DURATION=60' \
 		'                 Run a focused rogue-DHCP verification scenario on the lab LAN' \
-		'  make scenario-intermittent-dhcp-spoof DURATION=90' \
-		'                 Run pulsed rogue-DHCP spoofing windows for short-burst validation' \
-		'  make scenario-dhcp-offer-only DURATION=60' \
-		'                 Run rogue DHCP offer-only traffic without ACKs' \
+		'  make scenario-dhcp-starvation DURATION=60 WORKERS=1' \
+		'                 Run focused DHCP starvation with a selected number of spoofing workers' \
+		'  make scenario-dhcp-starvation-rogue-dhcp DURATION=90 WORKERS=32 TAKEOVER=1' \
+		'                 Run starvation lease logging, optionally with reactive rogue DHCP takeover' \
 		'  make scenario-mitigation-recovery DURATION=120' \
 		'                 Run automated mitigation and recovery' \
-		'  make scenario-compare TARGET=results' \
-		'                 Summarize runs collected via the direct shell scenario helpers' \
 		'  make setup      Run the full setup flow' \
 		'  make destroy    Tear down the lab and remove generated artifacts' \
 		'  make rebuild    Destroy and recreate the full lab'

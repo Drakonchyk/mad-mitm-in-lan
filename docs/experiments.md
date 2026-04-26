@@ -7,20 +7,20 @@ This page explains the experiment set implemented in the repository and how the 
 The repo uses two layers of evaluation:
 
 - main evaluation:
-  - the five core scenarios that form the main thesis-style comparison
+  - the core scenarios that form the main thesis-style comparison
 - supplementary evaluation:
-  - three extra scenarios used to study response speed, robustness, false positives, and degraded observability
+  - extra scenarios used to study response speed, DHCP behavior, robustness, false positives, and degraded observability
 
 The goal is not only to ask whether the detector, Zeek, or Suricata alert at least once. It is also to compare:
 
 - how quickly they react;
 - what kinds of evidence they react to;
-- how many semantic detector alerts are generated;
+- how many detector packet alerts are generated;
 - what operational impact is visible from the victim-side probe loop.
 
 ## Main Evaluation
 
-The main evaluation keeps the core five-scenario matrix:
+The main evaluation keeps this core scenario matrix:
 
 - `baseline`
   - benign negative class
@@ -30,15 +30,12 @@ The main evaluation keeps the core five-scenario matrix:
   - transparent ARP MITM with forwarding enabled
 - `arp-mitm-dns`
   - transparent MITM with focused DNS spoofing for the monitored domain set
+- `dhcp-spoof`
+  - rogue DHCP offer and ACK broadcast behavior
+- `dhcp-starvation`
+  - repeated DHCP client impersonation intended to pressure or deplete the lab lease pool
 - `mitigation-recovery`
   - attack followed by victim-side restoration of the legitimate gateway MAC
-
-A focused verification-only scenario also exists outside the core matrix:
-
-- `dhcp-spoof`
-- `intermittent-dhcp-spoof`
-- `dhcp-offer-only`
-  - dedicated rogue DHCP advertisement validation for the detector and switch-truth path
 
 Canonical command:
 
@@ -58,18 +55,32 @@ The supplementary scenarios exist because plain accuracy can become uninformativ
 
 The extra scenarios are:
 
-- `intermittent-arp-mitm-dns`
-  - pulsed attack windows to study reaction speed and missed short windows
-- `noisy-benign-baseline`
-  - benign churn intended to pressure false-positive behavior
-- `reduced-observability`
-  - the same attack family under lower detector packet visibility
+- `dhcp-starvation-rogue-dhcp`
+  - starvation pressure repeated with increasing parallel spoofing workers, real lease counting, and optional rogue DHCP takeover probes
+- `visibility-arp-mitm-dns`
+  - the ARP/DNS attack family under live packet loss at the sensor feed
+- `visibility-dhcp-spoof`
+  - the rogue-DHCP attack family under live packet loss at the sensor feed
 
 Canonical command:
 
 ```bash
 make experiment-plan-extra
 ```
+
+Visibility-degradation campaign:
+
+```bash
+make visibility-plan
+```
+
+DHCP-starvation worker-scaling campaign:
+
+```bash
+make starvation-takeover-plan
+```
+
+Set `TAKEOVER_ENABLE=0` to test only lease-pool flooding. Leave `TAKEOVER_ENABLE=1` for the full rogue-DHCP takeover probe.
 
 Typical report build:
 
@@ -89,6 +100,12 @@ The intended local full dataset is:
   - 5 measured runs per scenario
 
 Warm-up runs are excluded from the normal plots unless `--include-warmups` is passed to the report builder.
+
+To run only one scenario through the main pipeline, override `PLAN_SCENARIOS`. Example:
+
+```bash
+WARMUP_RUNS=0 MEASURED_RUNS=10 PLAN_SCENARIOS="dhcp-starvation" make experiment-plan
+```
 
 ## Timing Windows
 
@@ -115,7 +132,7 @@ The generated reports focus on:
 - event recall
 - time to first supported alert
 - time to recovery
-- semantic detector alert composition
+- detector packet-alert composition
 - victim-side operational metrics:
   - gateway ping latency
   - attacker ping latency
@@ -156,7 +173,6 @@ The repository keeps only a small retained sample locally under version control.
 
 That retained sample is meant for:
 
-- a deterministic `make demo-report` path;
 - fast inspection by readers;
 - lightweight repository size.
 
@@ -168,9 +184,7 @@ Full setup and demo path:
 
 ```bash
 make setup
-make demo-start
-make demo-scenario
-make demo-report
+make demo-ui
 ```
 
 Single-scenario commands:
@@ -180,13 +194,7 @@ make scenario-arp-poison-no-forward
 make scenario-arp-mitm-forward
 make scenario-arp-mitm-dns
 make scenario-dhcp-spoof
-make scenario-intermittent-dhcp-spoof
-make scenario-dhcp-offer-only
+make scenario-dhcp-starvation
+make scenario-dhcp-starvation-rogue-dhcp
 make scenario-mitigation-recovery
-```
-
-Live capture helper:
-
-```bash
-make demo-capture HOST=sensor IFACE=mitm-sensor0 FILTER="arp or icmp or port 53 or port 67 or port 68"
 ```

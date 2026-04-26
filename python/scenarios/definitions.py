@@ -56,6 +56,16 @@ SCENARIOS: dict[str, ScenarioDefinition] = {
         }),
         attack_types=frozenset({"dhcp_spoof"}),
     ),
+    "dhcp-starvation": ScenarioDefinition(
+        name="dhcp-starvation",
+        group="main",
+        label="dhcp-starvation",
+        detector_events=frozenset({
+            "dhcp_starvation_seen",
+            "dhcp_starvation_packet_seen",
+        }),
+        attack_types=frozenset({"dhcp_starvation"}),
+    ),
     "mitigation-recovery": ScenarioDefinition(
         name="mitigation-recovery",
         group="main",
@@ -67,10 +77,10 @@ SCENARIOS: dict[str, ScenarioDefinition] = {
         }),
         attack_types=frozenset({"arp_spoof", "dns_spoof"}),
     ),
-    "intermittent-arp-mitm-dns": ScenarioDefinition(
-        name="intermittent-arp-mitm-dns",
+    "visibility-arp-mitm-dns": ScenarioDefinition(
+        name="visibility-arp-mitm-dns",
         group="supplementary",
-        label="intermittent-arp-mitm-dns",
+        label="visibility-arp-mitm-dns",
         detector_events=frozenset({
             "gateway_mac_changed",
             "multiple_gateway_macs_seen",
@@ -78,43 +88,27 @@ SCENARIOS: dict[str, ScenarioDefinition] = {
         }),
         attack_types=frozenset({"arp_spoof", "dns_spoof"}),
     ),
-    "noisy-benign-baseline": ScenarioDefinition(
-        name="noisy-benign-baseline",
+    "visibility-dhcp-spoof": ScenarioDefinition(
+        name="visibility-dhcp-spoof",
         group="supplementary",
-        label="noisy-benign-baseline",
-        detector_events=frozenset(),
-        attack_types=frozenset(),
-    ),
-    "reduced-observability": ScenarioDefinition(
-        name="reduced-observability",
-        group="supplementary",
-        label="reduced-observability",
-        detector_events=frozenset({
-            "gateway_mac_changed",
-            "multiple_gateway_macs_seen",
-            "domain_resolution_changed",
-        }),
-        attack_types=frozenset({"arp_spoof", "dns_spoof"}),
-    ),
-    "intermittent-dhcp-spoof": ScenarioDefinition(
-        name="intermittent-dhcp-spoof",
-        group="supplementary",
-        label="intermittent-dhcp-spoof",
+        label="visibility-dhcp-spoof",
         detector_events=frozenset({
             "rogue_dhcp_server_seen",
             "dhcp_binding_conflict_seen",
         }),
         attack_types=frozenset({"dhcp_spoof"}),
     ),
-    "dhcp-offer-only": ScenarioDefinition(
-        name="dhcp-offer-only",
+    "dhcp-starvation-rogue-dhcp": ScenarioDefinition(
+        name="dhcp-starvation-rogue-dhcp",
         group="supplementary",
-        label="dhcp-offer-only",
+        label="dhcp-starvation-rogue-dhcp",
         detector_events=frozenset({
+            "dhcp_starvation_seen",
+            "dhcp_starvation_packet_seen",
             "rogue_dhcp_server_seen",
             "dhcp_binding_conflict_seen",
         }),
-        attack_types=frozenset({"dhcp_spoof"}),
+        attack_types=frozenset({"dhcp_starvation", "dhcp_spoof"}),
     ),
 }
 

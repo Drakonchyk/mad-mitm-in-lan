@@ -45,6 +45,7 @@ Experiment orchestration and timed recording:
 - `run-scenario-window.sh`
 - `run-experiment-plan.sh`
 - `run-supplementary-plan.sh`
+- `run-visibility-plan.sh`
 - `smoke-test.sh`
 
 ### `shell/scenarios/`
@@ -54,6 +55,9 @@ Direct automated scenario wrappers used for focused runs:
 - `record-arp-poison-no-forward.sh`
 - `record-arp-mitm-forward.sh`
 - `record-arp-mitm-dns.sh`
+- `record-dhcp-spoof.sh`
+- `record-dhcp-starvation.sh`
+- `record-dhcp-starvation-rogue-dhcp.sh`
 - `record-mitigation-recovery.sh`
 - `verify-isolated-lab.sh`
 - `compare-runs.sh`
@@ -64,7 +68,6 @@ Direct automated scenario wrappers used for focused runs:
 Small operator helpers:
 
 - `open-live-capture.sh`
-- `build-demo-report.sh`
 
 ### Shared Shell Libraries
 
@@ -137,7 +140,7 @@ Detector runtime code:
 Attacker-side research code:
 
 - `attacks.py`
-  - ARP-poisoning and DNS-spoofing primitives
+  - ARP poisoning, DNS spoofing, rogue DHCP, and DHCP starvation primitives
 - `research.py`
   - lab-scoped runner that builds attack helpers safely
 - `cli.py`

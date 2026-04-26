@@ -20,8 +20,8 @@ make baseline
 make smoke-test
 make scenario-arp-mitm-dns
 make scenario-dhcp-spoof
-make scenario-intermittent-dhcp-spoof
-make scenario-dhcp-offer-only
+make scenario-dhcp-starvation
+make scenario-dhcp-starvation-rogue-dhcp
 ```
 
 ## Planned Evaluations
@@ -29,6 +29,20 @@ make scenario-dhcp-offer-only
 ```bash
 make experiment-plan
 make experiment-plan-extra
+make visibility-plan
+make starvation-takeover-plan
+```
+
+Run only DHCP starvation through the main pipeline:
+
+```bash
+WARMUP_RUNS=0 MEASURED_RUNS=10 PLAN_SCENARIOS="dhcp-starvation" make experiment-plan
+```
+
+Keep the default warm-up and still do 10 measured DHCP-starvation runs:
+
+```bash
+WARMUP_RUNS=1 MEASURED_RUNS=10 PLAN_SCENARIOS="dhcp-starvation" make experiment-plan
 ```
 
 Resume or trim a plan:
@@ -37,7 +51,7 @@ Resume or trim a plan:
 make experiment-plan ARGS="--skip 2"
 make experiment-plan ARGS="--start 11"
 make experiment-plan ARGS="--skip-scenario baseline"
-make experiment-plan-extra ARGS="--start-scenario intermittent-arp-mitm-dns"
+make experiment-plan-extra ARGS="--start-scenario dhcp-starvation-rogue-dhcp"
 ```
 
 ## Report Generation
@@ -46,7 +60,6 @@ make experiment-plan-extra ARGS="--start-scenario intermittent-arp-mitm-dns"
 make summarize
 make experiment-report
 make experiment-report-extra
-make demo-report
 ```
 
 `make experiment-report-extra` is now just a compatibility alias of `make experiment-report`.
@@ -59,8 +72,9 @@ make scenario-arp-poison-no-forward
 make scenario-arp-mitm-forward
 make scenario-arp-mitm-dns
 make scenario-dhcp-spoof
+make scenario-dhcp-starvation
+make scenario-dhcp-starvation-rogue-dhcp
 make scenario-mitigation-recovery
-make scenario-compare TARGET=results
 ```
 
 Run just one focused scenario:
@@ -68,18 +82,13 @@ Run just one focused scenario:
 ```bash
 make scenario-arp-mitm-dns DURATION=90
 make scenario-dhcp-spoof DURATION=60
-make scenario-intermittent-dhcp-spoof DURATION=90
-make scenario-dhcp-offer-only DURATION=60
+make scenario-dhcp-starvation DURATION=20 WORKERS=1
+make scenario-dhcp-starvation-rogue-dhcp DURATION=90 WORKERS=32 TAKEOVER=1
 ```
 
 Those commands create a single run under `results/` without running the full smoke matrix or experiment plan.
 
-## Live Capture
-
-```bash
-make demo-capture HOST=sensor IFACE=mitm-sensor0 FILTER="arp or icmp or port 53 or port 67 or port 68"
-make demo-capture HOST=gateway IFACE=any FILTER="arp or icmp or port 53"
-```
+Use `TAKEOVER=0` for the single-scenario DHCP lease-pool flood without the rogue-DHCP takeover phase. Use `TAKEOVER_ENABLE=0 make starvation-takeover-plan` for the planned worker sweep without takeover.
 
 ## Quick Validation
 
@@ -116,10 +125,13 @@ Current Suricata note:
 - `SURICATA_ENABLE=0`
 - `PCAP_ENABLE=0`
 - `KEEP_DEBUG_ARTIFACTS=1`
-- `MAX_RUNS_PER_SCENARIO=1` for `make demo-report`
+- `WARMUP_RUNS=0` / `MEASURED_RUNS=10` for focused pipeline subsets
+- `PLAN_SCENARIOS="dhcp-starvation"` to restrict the main plan to one scenario
 
 Packet-capture retention notes:
 
 - single scenario commands keep full pcaps by default
-- planned experiment runs keep only one exemplar pcap per scenario by default
-- all planned runs still keep `pcap/wire-truth.json`, a compact switch-truth artifact used by the evaluator when the full pcap is pruned
+- planned experiment runs keep compact `pcap/wire-truth.json` by default and prune the full pcap afterward
+- visibility and starvation-worker campaigns keep only the first full pcap per scenario by default
+- guest pcaps and extra `tshark` summaries are off by default in the main and supplementary plans
+- planned runs also disable `iperf` and the post-attack settle tail by default unless explicitly re-enabled

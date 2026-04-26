@@ -37,7 +37,7 @@ When packet capture is enabled, the observed-wire timing basis should prefer the
 Two count families appear in the generated outputs and they should not be read as the same thing:
 
 - `wire-truth attack events`
-  - normalized attack evidence extracted from the mirrored switch capture
+  - matched attack packets extracted from the mirrored switch capture
   - this is the preferred ground-truth basis for packet-level scenarios
 - sensor alert counts
   - detector packet alerts, Zeek notices, and Suricata alerts
@@ -45,27 +45,22 @@ Two count families appear in the generated outputs and they should not be read a
 
 Example:
 
-- a 30-second ARP MITM run may show 8 wire-truth ARP events but 16 detector packet alerts
-- that does not mean the evaluator is wrong; it means the switch-truth parser is counting normalized observed attack events while the sensor is counting repeated alerting packets
+- a 30-second ARP MITM run may show 8 wire-truth ARP packets but 16 detector packet alerts
+- that does not automatically mean the evaluator is wrong; it usually means repeated spoof packets triggered repeated sensor alerts
 
-## Detector Semantic Alerts
+## Detector Packet Alerts
 
-The thesis-level detector alert count uses semantic detector state transitions rather than raw packet-observation events.
+The current summaries and report rows use detector packet-observation alerts as the primary detector count.
 
-Included semantic detector alerts:
+Common packet-level detector alerts include:
 
-- `gateway_mac_changed`
-- `multiple_gateway_macs_seen`
-- `icmp_redirects_seen`
-- `domain_resolution_changed`
+- `arp_spoof_packet_seen`
+- `dns_spoof_packet_seen`
+- `dhcp_starvation_packet_seen`
 - `rogue_dhcp_server_seen`
 - `dhcp_binding_conflict_seen`
-- `gateway_mac_restored`
-- `single_gateway_mac_restored`
-- `domain_resolution_restored`
-- `rogue_dhcp_server_cleared`
 
-Raw packet-level observations such as `arp_spoof_packet_seen` are still preserved in `detector.delta.jsonl`, but they are not the main alert count shown in summaries and thesis plots.
+Detector state transitions and narrative markers are still preserved in `detector.delta.jsonl`, but the main comparison path now focuses on packet-level detector evidence to stay closer to switch truth and comparator packet streams.
 
 ## Recovery Metrics
 
@@ -102,6 +97,7 @@ Raw packet-level observations such as `arp_spoof_packet_seen` are still preserve
 - optional wire truth support:
   - `pcap/sensor.pcap`
   - `pcap/victim.pcap` as a fallback/debug capture
+  - `pcap/wire-truth.json` as the compact retained switch-truth artifact when full pcaps are pruned
 
 ## Current Comparator Limitation
 

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-EVALUATION_CACHE_VERSION = 9
+EVALUATION_CACHE_VERSION = 14
 EVALUATION_DEPENDENCY_PATHS = [
     Path(__file__).resolve(),
     Path(__file__).resolve().with_name("core.py"),
@@ -17,6 +17,7 @@ ATTACK_TYPE_ORDER = [
     "icmp_redirect",
     "dns_spoof",
     "dhcp_spoof",
+    "dhcp_starvation",
 ]
 
 ATTACK_TYPE_LABELS = {
@@ -24,6 +25,7 @@ ATTACK_TYPE_LABELS = {
     "icmp_redirect": "ICMP redirect",
     "dns_spoof": "DNS spoof",
     "dhcp_spoof": "DHCP spoof",
+    "dhcp_starvation": "DHCP starvation",
 }
 
 GROUND_TRUTH_ATTACK_EVENTS = {
@@ -35,6 +37,9 @@ GROUND_TRUTH_ATTACK_EVENTS = {
     "rogue_dhcp_offer": "dhcp_spoof",
     "rogue_dhcp_ack": "dhcp_spoof",
     "rogue_dhcp_server_observed": "dhcp_spoof",
+    "dhcp_starvation_discover": "dhcp_starvation",
+    "dhcp_starvation_request": "dhcp_starvation",
+    "dhcp_starvation_observed": "dhcp_starvation",
 }
 
 DETECTOR_ALERT_EVENTS = {
@@ -43,6 +48,7 @@ DETECTOR_ALERT_EVENTS = {
     "dns_spoof_packet_seen": "dns_spoof",
     "rogue_dhcp_server_seen": "dhcp_spoof",
     "dhcp_binding_conflict_seen": "dhcp_spoof",
+    "dhcp_starvation_packet_seen": "dhcp_starvation",
 }
 
 ZEEK_ALERT_TYPES = {
@@ -50,6 +56,7 @@ ZEEK_ALERT_TYPES = {
     "MITMLab::ICMP_Redirect": "icmp_redirect",
     "MITMLab::DNS_Spoof": "dns_spoof",
     "MITMLab::DHCP_Spoof": "dhcp_spoof",
+    "MITMLab::DHCP_Starvation": "dhcp_starvation",
 }
 
 SURICATA_ALERT_TYPES = {
@@ -58,6 +65,8 @@ SURICATA_ALERT_TYPES = {
     "MITM-LAB live ICMP redirect from attacker to victim": "icmp_redirect",
     "MITM-LAB live DNS answer contains attacker IP": "dns_spoof",
     "MITM-LAB live rogue DHCP reply from attacker": "dhcp_spoof",
+    "MITM-LAB live DHCP starvation discover from spoofed client prefix": "dhcp_starvation",
+    "MITM-LAB live DHCP starvation request from spoofed client prefix": "dhcp_starvation",
 }
 
 SENSOR_COVERAGE = {
@@ -66,18 +75,21 @@ SENSOR_COVERAGE = {
         "icmp_redirect": True,
         "dns_spoof": True,
         "dhcp_spoof": True,
+        "dhcp_starvation": True,
     },
     "zeek": {
         "arp_spoof": True,
         "icmp_redirect": True,
         "dns_spoof": True,
         "dhcp_spoof": True,
+        "dhcp_starvation": True,
     },
     "suricata": {
         "arp_spoof": False,
         "icmp_redirect": True,
         "dns_spoof": True,
         "dhcp_spoof": True,
+        "dhcp_starvation": True,
     },
 }
 
@@ -158,11 +170,9 @@ class RunEvaluation:
             "run_id": self.run_id,
             "scenario": self.scenario,
             "attack_present": self.attack_present,
-            "ground_truth_source": self.ground_truth_source,
             "ground_truth_total_events": self.ground_truth_total_events,
             "ground_truth_attack_events": self.ground_truth_attack_events,
             "ground_truth_attacker_action_events": self.ground_truth_attacker_action_events,
-            "ground_truth_observed_wire_events": self.ground_truth_observed_wire_events,
             "ground_truth_control_events": self.ground_truth_control_events,
             "ground_truth_attack_started_at": self.ground_truth_attack_started_at,
             "ground_truth_attack_ended_at": self.ground_truth_attack_ended_at,
@@ -173,7 +183,6 @@ class RunEvaluation:
             "ground_truth_attack_type_durations_seconds": self.ground_truth_attack_type_durations_seconds,
             "ground_truth_attack_type_packet_rates_pps": self.ground_truth_attack_type_packet_rates_pps,
             "ground_truth_attacker_action_types": self.ground_truth_attacker_action_types,
-            "ground_truth_observed_wire_types": self.ground_truth_observed_wire_types,
             "ground_truth_control_types": self.ground_truth_control_types,
             "ground_truth_dns_query_count": self.ground_truth_dns_query_count,
             "ground_truth_dns_spoof_success_ratio": self.ground_truth_dns_spoof_success_ratio,
@@ -186,9 +195,6 @@ class RunEvaluation:
             "detector_attack_type_first_alert_at": self.detector_attack_type_first_alert_at,
             "detector_first_alert_at": self.detector_first_alert_at,
             "detector_ttd_seconds": self.detector_ttd_seconds,
-            "detector_supported_attack_started_at": self.detector_supported_attack_started_at,
-            "detector_supported_ttd_seconds": self.detector_supported_ttd_seconds,
-            "detector_coverage": self.detector_coverage,
             "zeek_alert_events": self.zeek_alert_events,
             "zeek_alert_types": self.zeek_alert_types,
             "zeek_unique_alert_type_count": self.zeek_unique_alert_type_count,
@@ -196,9 +202,6 @@ class RunEvaluation:
             "zeek_attack_type_first_alert_at": self.zeek_attack_type_first_alert_at,
             "zeek_first_alert_at": self.zeek_first_alert_at,
             "zeek_ttd_seconds": self.zeek_ttd_seconds,
-            "zeek_supported_attack_started_at": self.zeek_supported_attack_started_at,
-            "zeek_supported_ttd_seconds": self.zeek_supported_ttd_seconds,
-            "zeek_coverage": self.zeek_coverage,
             "suricata_alert_events": self.suricata_alert_events,
             "suricata_alert_types": self.suricata_alert_types,
             "suricata_unique_alert_type_count": self.suricata_unique_alert_type_count,
@@ -206,8 +209,5 @@ class RunEvaluation:
             "suricata_attack_type_first_alert_at": self.suricata_attack_type_first_alert_at,
             "suricata_first_alert_at": self.suricata_first_alert_at,
             "suricata_ttd_seconds": self.suricata_ttd_seconds,
-            "suricata_supported_attack_started_at": self.suricata_supported_attack_started_at,
-            "suricata_supported_ttd_seconds": self.suricata_supported_ttd_seconds,
-            "suricata_coverage": self.suricata_coverage,
             "combined_sensor_detected": (self.zeek_alert_events > 0 or self.suricata_alert_events > 0),
         }

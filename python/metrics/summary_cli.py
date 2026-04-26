@@ -142,6 +142,8 @@ def summarize_run(run_dir: Path) -> dict[str, str]:
         "mode": mode,
         "wire_truth_attack_events": str(evaluation.get("ground_truth_attack_events", "-")),
         "wire_truth_attack_types": evaluation.get("ground_truth_attack_types", {}) or {},
+        "ground_truth_attacker_action_events": str(evaluation.get("ground_truth_attacker_action_events", "-")),
+        "ground_truth_attacker_action_types": evaluation.get("ground_truth_attacker_action_types", {}) or {},
         "wire_truth_capture_duration_seconds": evaluation.get("ground_truth_capture_duration_seconds"),
         "wire_truth_attack_duration_seconds": evaluation.get("ground_truth_attack_duration_seconds"),
         "wire_truth_attack_type_rates": evaluation.get("ground_truth_attack_type_packet_rates_pps", {}) or {},
@@ -158,7 +160,6 @@ def summarize_run(run_dir: Path) -> dict[str, str]:
         "detector_alerts": str(detector_packet_alerts),
         "zeek_alerts": count_zeek_notices(zeek_notice_path(run_dir)),
         "suricata_alerts": count_suricata_alerts(suricata_eve_path(run_dir), meta),
-        "ground_truth_source": evaluation.get("ground_truth_source", "-"),
         "suricata_arp_rule_enabled": "yes" if meta.get("suricata_arp_rule_enabled") else "no",
         "suricata_arp_rule_note": meta.get("suricata_arp_rule_note", ""),
         "suricata_arp_detected": "yes" if (evaluation.get("suricata_attack_type_counts", {}) or {}).get("arp_spoof", 0) > 0 else "no",
@@ -168,39 +169,32 @@ def summarize_run(run_dir: Path) -> dict[str, str]:
 
 
 def print_single(summary: dict[str, str]) -> None:
-    ground_truth_label = "Wire-truth matched packets" if summary["ground_truth_source"] in {"switch_pcap", "victim_pcap"} else "Ground-truth attack events"
     print(f"Run: {summary['run_id']}")
     print(f"Scenario: {summary['scenario']} ({summary['mode']})")
     print(f"Ping gateway avg: {summary['ping_gateway_avg_ms']} ms")
     print(f"Ping attacker avg: {summary['ping_attacker_avg_ms']} ms")
     print(f"Curl total: {summary['curl_total_s']} s")
     print(f"Iperf lab throughput: {summary['iperf_mbps']} Mbps")
-    print(f"{ground_truth_label}: {summary['wire_truth_attack_events']}")
-    if summary["ground_truth_source"] in {"switch_pcap", "victim_pcap"}:
-        print(f"Wire-truth packets by type: {format_metric_map(summary['wire_truth_attack_types'], precision=0)}")
-        print(f"Wire-truth capture duration: {format_metric(summary['wire_truth_capture_duration_seconds'])} s")
-        print(f"Wire-truth attack duration: {format_metric(summary['wire_truth_attack_duration_seconds'])} s")
-        print(f"Wire-truth packet rates: {format_metric_map(summary['wire_truth_attack_type_rates'], suffix=' pps')}")
-        if summary["wire_truth_dns_query_count"] != "0" or summary["wire_truth_dns_spoof_success_ratio"] is not None:
-            print(
-                "Wire-truth DNS spoof success: "
-                f"{format_metric(summary['wire_truth_dns_spoof_success_ratio'])} "
-                f"(queries={summary['wire_truth_dns_query_count']})"
-            )
-        if summary["wire_truth_arp_direction_counts"]:
-            print(f"Wire-truth ARP symmetry: {format_metric_map(summary['wire_truth_arp_direction_counts'], precision=0)}")
-        if summary["wire_truth_control_plane_counts"]:
-            print(f"Wire-truth control-plane counts: {format_metric_map(summary['wire_truth_control_plane_counts'], precision=0)}")
+    print(f"Ground-truth attack packets: {summary['wire_truth_attack_events']}")
+    print(f"Ground-truth action events: {summary['ground_truth_attacker_action_events']}")
+    print(f"Ground-truth action types: {format_metric_map(summary['ground_truth_attacker_action_types'], precision=0)}")
+    print(f"Wire-truth packets by type: {format_metric_map(summary['wire_truth_attack_types'], precision=0)}")
+    print(f"Wire-truth capture duration: {format_metric(summary['wire_truth_capture_duration_seconds'])} s")
+    print(f"Wire-truth attack duration: {format_metric(summary['wire_truth_attack_duration_seconds'])} s")
+    print(f"Wire-truth packet rates: {format_metric_map(summary['wire_truth_attack_type_rates'], suffix=' pps')}")
+    if summary["wire_truth_dns_query_count"] != "0" or summary["wire_truth_dns_spoof_success_ratio"] is not None:
+        print(
+            "Wire-truth DNS spoof success: "
+            f"{format_metric(summary['wire_truth_dns_spoof_success_ratio'])} "
+            f"(queries={summary['wire_truth_dns_query_count']})"
+        )
+    if summary["wire_truth_arp_direction_counts"]:
+        print(f"Wire-truth ARP symmetry: {format_metric_map(summary['wire_truth_arp_direction_counts'], precision=0)}")
+    if summary["wire_truth_control_plane_counts"]:
+        print(f"Wire-truth control-plane counts: {format_metric_map(summary['wire_truth_control_plane_counts'], precision=0)}")
     print(f"Detector packet alerts: {summary['detector_alerts']}")
     print(f"Zeek notices: {summary['zeek_alerts']}")
     print(f"Suricata alerts: {summary['suricata_alerts']}")
-    print(f"Ground truth source: {summary['ground_truth_source']}")
-    if summary["suricata_arp_rule_enabled"] == "no":
-        if summary["suricata_arp_detected"] == "yes":
-            note = "signature self-test failed, but ARP spoof was detected via Suricata EVE ARP records"
-        else:
-            note = summary["suricata_arp_rule_note"] or "disabled on this host build/config"
-        print(f"Suricata ARP coverage: {note}")
     print(f"DNS log lines: {summary['dns_log_lines']}")
     print(f"Artifacts: {summary['path']}")
 
@@ -217,7 +211,6 @@ def print_table(summaries: list[dict[str, str]]) -> None:
         "detector_alerts",
         "zeek_alerts",
         "suricata_alerts",
-        "ground_truth_source",
         "path",
     ]
     print("| " + " | ".join(headers) + " |")

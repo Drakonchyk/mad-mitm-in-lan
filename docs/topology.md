@@ -10,7 +10,7 @@ flowchart LR
         Orchestration["shell/ + python/\norchestration and report scripts"]
         Detector["Detector\nhost-side on mitm-sensor0"]
         Results["results/\nrun artifacts and reports"]
-        SampleReports["make experiment-report\nmake demo-report"]
+        SampleReports["make experiment-report"]
     end
 
     subgraph DefaultNet["libvirt default NAT network"]
@@ -31,7 +31,7 @@ flowchart LR
         end
 
         subgraph Attacker["mitm-attacker\nDHCP lease"]
-            AttackScripts["python -m mitm.cli\nscenario actions"]
+            AttackScripts["python -m mitm.cli\nARP/DNS/DHCP scenario actions"]
             AttackerCapture["attacker pcap\noptional"]
         end
 
@@ -97,4 +97,3 @@ flowchart LR
   - `results/<run>/pcap/`
 - generated reports:
   - `results/experiment-report/`
-  - `results/demo-report/`

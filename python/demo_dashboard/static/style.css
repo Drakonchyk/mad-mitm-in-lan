@@ -102,11 +102,42 @@ h1 {
   gap: 16px;
 }
 
+.conditional-controls.hidden {
+  display: none;
+}
+
 .duration-row {
   display: grid;
   grid-template-columns: 1fr 96px;
   gap: 12px;
   align-items: center;
+}
+
+.radio-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.radio-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--paper-strong);
+}
+
+.checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--paper-strong);
 }
 
 .scenario-grid {
@@ -307,6 +338,26 @@ button.secondary {
 
 button.featured {
   background: linear-gradient(135deg, #d66d37, #9c3216);
+}
+
+button.selected {
+  outline: 3px solid rgba(47, 122, 120, 0.34);
+  outline-offset: 3px;
+}
+
+button.run-button {
+  justify-self: start;
+  min-width: min(100%, 260px);
+  background: linear-gradient(135deg, var(--accent-2), #275f5d);
+  box-shadow: 0 16px 28px rgba(47, 122, 120, 0.22);
+}
+
+button.small-action {
+  padding: 9px 11px;
+  border-radius: 12px;
+  font-size: 0.82rem;
+  background: linear-gradient(135deg, var(--accent-2), #275f5d);
+  box-shadow: none;
 }
 
 button:hover {

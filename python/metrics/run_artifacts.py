@@ -25,6 +25,8 @@ DETECTOR_STATE_EVENTS = {
     "rogue_dhcp_server_seen",
     "rogue_dhcp_server_cleared",
     "dhcp_binding_conflict_seen",
+    "dhcp_starvation_seen",
+    "dhcp_starvation_cleared",
 }
 
 DETECTOR_PACKET_ALERT_EVENTS = {
@@ -33,6 +35,7 @@ DETECTOR_PACKET_ALERT_EVENTS = {
     "dns_spoof_packet_seen",
     "rogue_dhcp_server_seen",
     "dhcp_binding_conflict_seen",
+    "dhcp_starvation_packet_seen",
 }
 
 

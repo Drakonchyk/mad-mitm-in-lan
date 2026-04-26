@@ -1,4 +1,4 @@
-.PHONY: baseline smoke-test experiment-plan experiment-plan-extra demo-start demo-scenario demo-capture demo-ui
+.PHONY: baseline smoke-test experiment-plan experiment-plan-extra visibility-plan starvation-takeover-plan demo-ui
 
 baseline:
 	./shell/experiments/run-baseline.sh
@@ -12,14 +12,11 @@ experiment-plan:
 experiment-plan-extra:
 	./shell/experiments/run-supplementary-plan.sh $(ARGS)
 
-demo-start:
-	./shell/lab/setup-lab.sh
+visibility-plan:
+	./shell/experiments/run-visibility-plan.sh $(ARGS)
 
-demo-scenario:
-	$(MAKE) scenario-arp-mitm-dns DURATION="$(or $(DURATION),90)"
-
-demo-capture:
-	./shell/tools/open-live-capture.sh "$(or $(HOST),victim)" "$(or $(IFACE),)" "$(or $(FILTER),arp or icmp or port 53)"
+starvation-takeover-plan:
+	./shell/experiments/run-starvation-takeover-plan.sh $(ARGS)
 
 demo-ui:
 	HOST="$(or $(HOST),127.0.0.1)" PORT="$(or $(PORT),8765)" ./shell/demo/run-ui.sh

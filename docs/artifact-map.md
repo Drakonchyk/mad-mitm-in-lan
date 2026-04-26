@@ -12,13 +12,13 @@ This page maps generated artifacts to the parts of the thesis they are most usef
 | `detector/detector-explained.txt` | illustrative narrative examples in the results chapter |
 | `pcap/sensor.pcap` | switch-mirror packet truth for attack timing and packet-level validation |
 | `pcap/wire-truth.json` | compact switch-truth counts, timings, and rates when full pcaps are pruned |
+| `gateway/dhcp-starvation-cleanup.*` | confirms post-starvation lease cleanup and dnsmasq restart behavior |
 | `victim/traffic-window.txt` | latency and response-time analysis |
 | `victim/iperf3.json` | throughput comparison |
 | `zeek/host/` | Zeek comparator output from the mirrored switch sensor |
 | `suricata/host/` | Suricata comparator output from the mirrored switch sensor |
 | `pcap/` | switch-truth plus guest-side debugging captures |
 | `results/experiment-report/` | main evaluation figures and tables |
-| `results/demo-report/` | small deterministic sample-report set for demos and repo readers |
 
 ## Suggested Chapter Mapping
 

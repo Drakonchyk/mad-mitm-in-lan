@@ -40,6 +40,7 @@ class LabTemplateRenderer:
         source = (self.repo_root / "python" / "detector" / "live.py").read_text(encoding="utf-8")
         return (
             source.replace("__GATEWAY_IP__", self.config["GATEWAY_IP"])
+            .replace("__LAB_SUBNET__", self.config["LAB_SUBNET"])
             .replace("__DNS_SERVER__", self.config["DNS_SERVER"])
             .replace("__ATTACKER_IP__", "")
             .replace("__VICTIM_IP__", "")
@@ -52,13 +53,13 @@ class LabTemplateRenderer:
         source = (self.repo_root / "config" / "mitm-lab-live.zeek").read_text(encoding="utf-8")
         return (
             source.replace("__GATEWAY_IP__", self.config["GATEWAY_IP"])
+            .replace("__LAB_SUBNET__", self.config["LAB_SUBNET"])
             .replace("__DNS_SERVER__", self.config["DNS_SERVER"])
             .replace("__ATTACKER_IP__", self.attacker_ip)
             .replace("__VICTIM_IP__", self.victim_ip)
             .replace("__ATTACKER_MAC__", self.config["ATTACKER_MAC"].lower())
             .replace("__VICTIM_MAC__", self.config["VICTIM_MAC"].lower())
             .replace("__GATEWAY_MAC__", self.config["GATEWAY_LAB_MAC"].lower())
-            .replace("__DHCP_STARVATION_MAC_PREFIX__", self.config["DHCP_STARVATION_MAC_PREFIX"].lower())
             .replace("__ZEEK_DOMAIN_SET__", domains)
         )
 

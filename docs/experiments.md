@@ -9,7 +9,7 @@ The repo uses two layers of evaluation:
 - main evaluation:
   - the core scenarios that form the main thesis-style comparison
 - supplementary evaluation:
-  - extra scenarios used to study response speed, DHCP behavior, robustness, false positives, and degraded observability
+  - extra scenarios used to study response speed, DHCP behavior, detector throughput limits, false positives, and degraded sensor reliability
 
 The goal is not only to ask whether the detector, Zeek, or Suricata alert at least once. It is also to compare:
 
@@ -20,10 +20,10 @@ The goal is not only to ask whether the detector, Zeek, or Suricata alert at lea
 
 ## Main Evaluation
 
-The main evaluation keeps this core scenario matrix:
+Run `make baseline` separately before the attack matrix to collect the clean negative-control reference.
 
-- `baseline`
-  - benign negative class
+The main evaluation plan keeps this core attack scenario matrix:
+
 - `arp-poison-no-forward`
   - disruption-only poisoning without a transparent forwarding path
 - `arp-mitm-forward`
@@ -32,10 +32,8 @@ The main evaluation keeps this core scenario matrix:
   - transparent MITM with focused DNS spoofing for the monitored domain set
 - `dhcp-spoof`
   - rogue DHCP offer and ACK broadcast behavior
-- `dhcp-starvation`
-  - repeated DHCP client impersonation intended to pressure or deplete the lab lease pool
-- `mitigation-recovery`
-  - attack followed by victim-side restoration of the legitimate gateway MAC
+
+Mitigation is deliberately excluded from the default main plan because detection and reliability are the thesis-critical measurements. The `mitigation-recovery` scenario still exists as an executable standalone run.
 
 Canonical command:
 
@@ -55,12 +53,10 @@ The supplementary scenarios exist because plain accuracy can become uninformativ
 
 The extra scenarios are:
 
-- `dhcp-starvation-rogue-dhcp`
-  - starvation pressure repeated with increasing parallel spoofing workers, real lease counting, and optional rogue DHCP takeover probes
-- `visibility-arp-mitm-dns`
-  - the ARP/DNS attack family under live packet loss at the sensor feed
-- `visibility-dhcp-spoof`
-  - the rogue-DHCP attack family under live packet loss at the sensor feed
+- `reliability-arp-mitm-dns`
+  - the ARP/DNS attack family under NetEm-impaired sensor traffic
+- `reliability-dhcp-spoof`
+  - the rogue-DHCP attack family under NetEm-impaired sensor traffic
 
 Canonical command:
 
@@ -68,19 +64,23 @@ Canonical command:
 make experiment-plan-extra
 ```
 
-Visibility-degradation campaign:
+Reliability-degradation campaign:
 
 ```bash
-make visibility-plan
+make reliability RUNS=3
+make reliability-plan
 ```
 
-DHCP-starvation worker-scaling campaign:
+Use `make reliability RUNS=3` for the thesis packet-loss sweep: ARP/DNS MITM and focused DHCP rogue-server detection at 0% through 100% loss in 10% steps. Use `make reliability-plan` with `RELIABILITY_LOSS_LEVELS`, `RELIABILITY_DELAY_MS`, `RELIABILITY_JITTER_MS`, and `RELIABILITY_RATE` when tuning custom packet loss, delay, jitter, or bandwidth limits.
+
+Detector-overload calibration campaign:
 
 ```bash
-make starvation-takeover-plan
+make overload-plan
+make overload-summary
 ```
 
-Set `TAKEOVER_ENABLE=0` to test only lease-pool flooding. Leave `TAKEOVER_ENABLE=1` for the full rogue-DHCP takeover probe.
+This sends controlled ICMP background traffic with Python/Scapy, matches the detector capture filter, and splits the requested packet rate evenly across `OVERLOAD_SOURCES`, for example victim and attacker. Runs are short by default (`OVERLOAD_DURATION_SECONDS=20`, `OVERLOAD_TRAFFIC_SECONDS=12`) and use OVS snooping truth unless pcaps are explicitly enabled.
 
 Typical report build:
 
@@ -93,8 +93,9 @@ make experiment-report
 The intended local full dataset is:
 
 - main evaluation:
+  - baseline reference is collected separately with `make baseline`
   - 1 warm-up run per scenario
-  - 10 measured runs per scenario
+  - 5 measured runs per scenario
 - supplementary evaluation:
   - 1 warm-up run per scenario
   - 5 measured runs per scenario
@@ -104,22 +105,26 @@ Warm-up runs are excluded from the normal plots unless `--include-warmups` is pa
 To run only one scenario through the main pipeline, override `PLAN_SCENARIOS`. Example:
 
 ```bash
-WARMUP_RUNS=0 MEASURED_RUNS=10 PLAN_SCENARIOS="dhcp-starvation" make experiment-plan
+WARMUP_RUNS=0 MEASURED_RUNS=5 PLAN_SCENARIOS="dhcp-spoof" make experiment-plan
 ```
 
 ## Timing Windows
 
-Main scenarios use fixed windows so time-to-detection and recovery metrics are comparable.
+Main attack scenarios use fixed windows so time-to-detection and recovery metrics are comparable.
 
-- 90-second attack runs:
-  - `t=0..10 s`: clean prefix
-  - `t=10..70 s`: attack active
-  - `t=70..90 s`: recovery tail
-- mitigation-recovery:
-  - `t=0..10 s`: clean prefix
-  - `t=10..45 s`: attack active
-  - `t=45 s`: mitigation
-  - `t=45..120 s`: recovery observation
+- ARP attack runs:
+  - `t=0..5 s`: clean prefix
+  - `t=5..35 s`: attack active
+  - `t=35..45 s`: recovery tail
+- DHCP spoof runs:
+  - `t=0..5 s`: clean prefix
+  - `t=5..25 s`: attack active
+  - `t=25..30 s`: recovery tail
+- standalone mitigation-recovery:
+  - `t=0..5 s`: clean prefix
+  - `t=5..30 s`: attack active
+  - `t=30 s`: mitigation
+  - `t=30..75 s`: recovery observation
 
 The exact per-scenario timing descriptions are in [Scenario Definitions](./scenario-definitions.md).
 
@@ -136,12 +141,17 @@ The generated reports focus on:
 - victim-side operational metrics:
   - gateway ping latency
   - attacker ping latency
-  - `curl time_total`
-  - `iperf3` throughput
+  - synthetic probe packet counts
+  - optional `curl time_total`
+  - optional `iperf3` throughput
+
+Scenario windows use a synthetic Python/Scapy traffic probe by default. It produces predictable ICMP packets and UDP DNS queries, which makes the background load easier to reason about than `curl` or `iperf3`. `curl` and `iperf3` are still useful diagnostics, but they are opt-in rather than core evidence.
 
 Timing comparisons between detector, Zeek, and Suricata use the first supported ground-truth attack evidence for each tool rather than the nominal planned attack start.
 
-When packet capture is enabled, the preferred observed-wire basis is the mirrored switch capture on `results/<run>/pcap/sensor.pcap`. That keeps detector evaluation tied to raw packets from the switch view instead of the detector's own emitted events.
+When packet capture is enabled, the preferred observed-wire basis is the mirrored switch capture on `results/<run>/pcap/sensor.pcap`. Per-port captures under `results/<run>/pcap/ports/` keep gateway, victim, and attacker switch-port traffic separate for focused debugging. For compact reliability and overload runs, pcaps are optional: OVS snooping artifacts record ARP, DNS, and DHCP trust violations from non-gateway ports and are materialized into `ground-truth/trusted-observations.sqlite` before metrics are computed.
+
+By default, raw per-run files are only temporary. After each run is evaluated, the durable rows are inserted into `results/experiment-results.sqlite` and raw artifacts are pruned. Set `KEEP_DEBUG_ARTIFACTS=1` when a run needs full files for packet-level debugging or report development.
 
 The full metric definition page is [Evaluation Metrics](./evaluation-metrics.md).
 
@@ -194,7 +204,7 @@ make scenario-arp-poison-no-forward
 make scenario-arp-mitm-forward
 make scenario-arp-mitm-dns
 make scenario-dhcp-spoof
-make scenario-dhcp-starvation
-make scenario-dhcp-starvation-rogue-dhcp
+make scenario-reliability-arp-mitm-dns LOSS=5
+make scenario-reliability-dhcp-spoof LOSS=5
 make scenario-mitigation-recovery
 ```

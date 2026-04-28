@@ -15,6 +15,31 @@ warn() {
   printf '[!] %s\n' "$*" >&2
 }
 
+dhcp_snooping_mode() {
+  local mode="${LAB_DHCP_SNOOPING_MODE:-monitor}"
+
+  if [[ "${LAB_DHCP_SNOOPING_ENFORCE:-0}" == "1" ]]; then
+    printf 'enforce\n'
+    return 0
+  fi
+
+  case "${mode,,}" in
+    monitor|observe|detect)
+      printf 'monitor\n'
+      ;;
+    enforce|drop)
+      printf 'enforce\n'
+      ;;
+    off|disable|disabled|0|false|no)
+      printf 'off\n'
+      ;;
+    *)
+      warn "Unknown LAB_DHCP_SNOOPING_MODE=${mode}; using monitor"
+      printf 'monitor\n'
+      ;;
+  esac
+}
+
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
     warn "Missing required command: $1"

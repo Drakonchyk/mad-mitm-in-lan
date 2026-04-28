@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import threading
 from contextlib import suppress
@@ -38,16 +39,15 @@ ZEEK_LOG = Path("/tmp/mitm-lab-zeek-host/current/notice.log")
 ZEEK_PID = Path("/tmp/mitm-lab-zeek-host/zeek.pid")
 SURICATA_LOG = Path("/tmp/mitm-lab-suricata-host/current/eve.json")
 SURICATA_PID = Path("/tmp/mitm-lab-suricata-host/suricata.pid")
+RESULTS_DB = REPO_ROOT / "results" / "experiment-results.sqlite"
 
 SCENARIO_SCRIPTS = {
     "arp-poison-no-forward": REPO_ROOT / "shell/scenarios/record-arp-poison-no-forward.sh",
     "arp-mitm-forward": REPO_ROOT / "shell/scenarios/record-arp-mitm-forward.sh",
     "arp-mitm-dns": REPO_ROOT / "shell/scenarios/record-arp-mitm-dns.sh",
     "dhcp-spoof": REPO_ROOT / "shell/scenarios/record-dhcp-spoof.sh",
-    "dhcp-starvation": REPO_ROOT / "shell/scenarios/record-dhcp-starvation.sh",
-    "dhcp-starvation-rogue-dhcp": REPO_ROOT / "shell/scenarios/record-dhcp-starvation-rogue-dhcp.sh",
-    "visibility-arp-mitm-dns": REPO_ROOT / "shell/scenarios/record-visibility-arp-mitm-dns.sh",
-    "visibility-dhcp-spoof": REPO_ROOT / "shell/scenarios/record-visibility-dhcp-spoof.sh",
+    "reliability-arp-mitm-dns": REPO_ROOT / "shell/scenarios/record-reliability-arp-mitm-dns.sh",
+    "reliability-dhcp-spoof": REPO_ROOT / "shell/scenarios/record-reliability-dhcp-spoof.sh",
     "mitigation-recovery": REPO_ROOT / "shell/scenarios/record-mitigation-recovery.sh",
 }
 
@@ -56,14 +56,21 @@ DEMO_SCENARIOS = [
     "arp-mitm-forward",
     "arp-mitm-dns",
     "dhcp-spoof",
-    "dhcp-starvation",
-    "dhcp-starvation-rogue-dhcp",
-    "visibility-arp-mitm-dns",
-    "visibility-dhcp-spoof",
+    "reliability-arp-mitm-dns",
+    "reliability-dhcp-spoof",
     "mitigation-recovery",
 ]
 
-FEATURED_SCENARIOS = {"arp-mitm-dns", "dhcp-spoof", "dhcp-starvation", "dhcp-starvation-rogue-dhcp", "visibility-arp-mitm-dns", "visibility-dhcp-spoof"}
+FEATURED_SCENARIOS = {"arp-mitm-dns", "dhcp-spoof", "reliability-arp-mitm-dns", "reliability-dhcp-spoof"}
+DEFAULT_SCENARIO_DURATIONS = {
+    "arp-poison-no-forward": 30,
+    "arp-mitm-forward": 30,
+    "arp-mitm-dns": 45,
+    "dhcp-spoof": 30,
+    "reliability-arp-mitm-dns": 30,
+    "reliability-dhcp-spoof": 20,
+    "mitigation-recovery": 60,
+}
 
 
 def load_lab_constants() -> dict[str, str]:
@@ -99,20 +106,12 @@ def clamp_duration(raw: Any) -> int:
     return max(5, min(60, value))
 
 
-def clamp_visibility(raw: Any) -> int:
+def clamp_loss_percent(raw: Any) -> int:
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        value = 100
+        value = 0
     return max(0, min(100, value))
-
-
-def clamp_workers(raw: Any) -> int:
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        value = 1
-    return max(1, min(108, value))
 
 
 def load_json_file(path: Path) -> dict[str, Any] | None:
@@ -199,8 +198,7 @@ def summarize_detector_entry(entry: dict[str, Any]) -> str:
         return (
             f"Heartbeat: arp={entry.get('arp_spoof_packets_seen', 0)} "
             f"dns={entry.get('dns_spoof_packets_seen', 0)} "
-            f"dhcp={entry.get('rogue_dhcp_packets_seen', 0)} "
-            f"starvation={entry.get('dhcp_starvation_packets_seen', 0)}"
+            f"dhcp={entry.get('rogue_dhcp_packets_seen', 0)}"
         )
     if event == "dhcp_offer_seen":
         return (
@@ -214,16 +212,6 @@ def summarize_detector_entry(entry: dict[str, Any]) -> str:
         )
     if event == "rogue_dhcp_server_seen":
         return f"Rogue DHCP server {entry.get('dhcp_server')} ({entry.get('dhcp_server_mac')})"
-    if event == "dhcp_starvation_seen":
-        return (
-            f"DHCP starvation suspected: {entry.get('unique_client_count')} unique clients "
-            f"in {entry.get('window_seconds')}s"
-        )
-    if event == "dhcp_starvation_packet_seen":
-        return (
-            f"DHCP {entry.get('message_type')} from {entry.get('client_mac')} "
-            f"(unique clients={entry.get('unique_client_count')})"
-        )
     if event == "gateway_mac_changed":
         return f"Gateway MAC changed to {entry.get('gateway_mac')}"
     if event == "multiple_gateway_macs_seen":
@@ -315,7 +303,6 @@ def detector_status() -> dict[str, Any]:
     arp_count = sum(1 for entry in records if entry.get("event") == "arp_spoof_packet_seen")
     dns_count = sum(1 for entry in records if entry.get("event") == "dns_spoof_packet_seen")
     dhcp_count = sum(1 for entry in records if entry.get("event") in {"dhcp_offer_seen", "dhcp_ack_seen"})
-    starvation_count = sum(1 for entry in records if entry.get("event") == "dhcp_starvation_packet_seen")
     recent = interesting_detector_entries(limit=1)
     return {
         "name": "Detector",
@@ -328,7 +315,6 @@ def detector_status() -> dict[str, Any]:
             "arp_spoof": arp_count,
             "dns_spoof": dns_count,
             "dhcp_spoof": dhcp_count,
-            "dhcp_starvation": starvation_count,
         },
         "known_victim_ip": state.get("known_victim_ip"),
         "known_attacker_ip": state.get("known_attacker_ip"),
@@ -338,7 +324,7 @@ def detector_status() -> dict[str, Any]:
 def zeek_status() -> dict[str, Any]:
     pid = read_pid(ZEEK_PID)
     records = load_jsonl_all(ZEEK_LOG)
-    counts = {"arp_spoof": 0, "dns_spoof": 0, "dhcp_spoof": 0, "dhcp_starvation": 0}
+    counts = {"arp_spoof": 0, "dns_spoof": 0, "dhcp_spoof": 0}
     for entry in records:
         note = entry.get("note")
         if note == "MITMLab::ARP_Spoof":
@@ -347,8 +333,6 @@ def zeek_status() -> dict[str, Any]:
             counts["dns_spoof"] += 1
         elif note == "MITMLab::DHCP_Spoof":
             counts["dhcp_spoof"] += 1
-        elif note == "MITMLab::DHCP_Starvation":
-            counts["dhcp_starvation"] += 1
     recent = interesting_zeek_entries(limit=1)
     return {
         "name": "Zeek",
@@ -365,7 +349,7 @@ def suricata_status() -> dict[str, Any]:
     attacker_mac = LAB_CONSTANTS.get("ATTACKER_MAC", "").lower()
     gateway_ip = LAB_CONSTANTS.get("GATEWAY_IP", "")
     records = load_jsonl_all(SURICATA_LOG, max_bytes=2 * 1024 * 1024)
-    counts = {"arp_spoof": 0, "dns_spoof": 0, "dhcp_spoof": 0, "dhcp_starvation": 0}
+    counts = {"arp_spoof": 0, "dns_spoof": 0, "dhcp_spoof": 0}
     for entry in records:
         event_type = entry.get("event_type")
         if event_type == "alert":
@@ -374,8 +358,6 @@ def suricata_status() -> dict[str, Any]:
                 counts["dns_spoof"] += 1
             elif "rogue DHCP reply from attacker" in signature:
                 counts["dhcp_spoof"] += 1
-            elif "DHCP starvation" in signature:
-                counts["dhcp_starvation"] += 1
         elif event_type == "arp":
             arp = entry.get("arp", {})
             if (
@@ -401,10 +383,8 @@ def pretty_label(name: str) -> str:
         "arp-mitm-forward": "ARP MITM",
         "arp-mitm-dns": "ARP + DNS MITM",
         "dhcp-spoof": "DHCP Spoof",
-        "dhcp-starvation": "DHCP Starvation",
-        "dhcp-starvation-rogue-dhcp": "Starvation + Rogue DHCP",
-        "visibility-arp-mitm-dns": "Visibility ARP + DNS",
-        "visibility-dhcp-spoof": "Visibility DHCP",
+        "reliability-arp-mitm-dns": "Reliability ARP + DNS",
+        "reliability-dhcp-spoof": "Reliability DHCP Rogue",
         "mitigation-recovery": "Mitigation Recovery",
     }
     return custom.get(name, name.replace("-", " ").title())
@@ -421,6 +401,7 @@ def scenario_catalog() -> list[dict[str, Any]]:
                 "group": definition.group if definition else "main",
                 "featured": name in FEATURED_SCENARIOS,
                 "attack_types": sorted((definition.attack_types if definition else [])),
+                "default_duration": DEFAULT_SCENARIO_DURATIONS.get(name, 30),
             }
         )
     return rows
@@ -447,6 +428,7 @@ def latest_result_summary(result_dir: Path | None) -> dict[str, Any] | None:
     summary_path = result_dir / "evaluation-summary.txt"
     payload: dict[str, Any] = {
         "path": str(result_dir),
+        "can_download": result_dir.exists(),
         "summary_path": str(summary_path) if summary_path.exists() else None,
     }
     if not evaluation_path.exists():
@@ -471,6 +453,161 @@ def latest_result_summary(result_dir: Path | None) -> dict[str, Any] | None:
         }
     )
     return payload
+
+
+def latest_result_from_db() -> dict[str, Any] | None:
+    if not RESULTS_DB.exists():
+        return None
+    try:
+        with sqlite3.connect(RESULTS_DB) as db:
+            db.row_factory = sqlite3.Row
+            run = db.execute(
+                """
+                SELECT run_id, run_dir, scenario, ground_truth_source,
+                       detector_alert_events, zeek_alert_events, suricata_alert_events
+                FROM runs
+                ORDER BY started_at DESC, run_id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if run is None:
+                return None
+            truth_rows = db.execute(
+                "SELECT attack_type, truth_count FROM truth_counts WHERE run_id = ?",
+                (run["run_id"],),
+            ).fetchall()
+            sensor_rows = db.execute(
+                "SELECT sensor, attack_type, alert_count FROM sensor_counts WHERE run_id = ?",
+                (run["run_id"],),
+            ).fetchall()
+    except sqlite3.Error:
+        return None
+
+    sensor_counts: dict[str, dict[str, int]] = {
+        "detector": {},
+        "zeek": {},
+        "suricata": {},
+    }
+    for row in sensor_rows:
+        sensor = str(row["sensor"])
+        if sensor in sensor_counts:
+            sensor_counts[sensor][str(row["attack_type"])] = int(row["alert_count"])
+
+    run_dir = Path(str(run["run_dir"]))
+    return {
+        "path": str(run_dir),
+        "can_download": run_dir.exists(),
+        "summary_path": None,
+        "scenario": run["scenario"],
+        "ground_truth_source": run["ground_truth_source"],
+        "ground_truth_attack_events": sum(int(row["truth_count"]) for row in truth_rows),
+        "ground_truth_attack_types": {str(row["attack_type"]): int(row["truth_count"]) for row in truth_rows},
+        "ground_truth_arp_spoof_direction_counts": {},
+        "ground_truth_attack_duration_seconds": None,
+        "detector_alert_events": run["detector_alert_events"],
+        "detector_attack_type_counts": sensor_counts["detector"],
+        "zeek_alert_events": run["zeek_alert_events"],
+        "zeek_attack_type_counts": sensor_counts["zeek"],
+        "suricata_alert_events": run["suricata_alert_events"],
+        "suricata_attack_type_counts": sensor_counts["suricata"],
+    }
+
+
+def results_db_summary() -> dict[str, Any]:
+    empty = {
+        "path": str(RESULTS_DB),
+        "exists": RESULTS_DB.exists(),
+        "total_runs": 0,
+        "retained_runs": 0,
+        "pcap_runs": 0,
+        "first_started_at": None,
+        "latest_started_at": None,
+        "sensor_totals": {},
+        "scenarios": [],
+    }
+    if not RESULTS_DB.exists():
+        return empty
+
+    try:
+        with sqlite3.connect(RESULTS_DB) as db:
+            db.row_factory = sqlite3.Row
+            totals = db.execute(
+                """
+                SELECT COUNT(*) AS total_runs,
+                       COALESCE(SUM(raw_artifacts_retained), 0) AS retained_runs,
+                       COALESCE(SUM(pcap_requested), 0) AS pcap_runs,
+                       MIN(started_at) AS first_started_at,
+                       MAX(started_at) AS latest_started_at,
+                       COALESCE(SUM(detector_alert_events), 0) AS detector_alerts,
+                       COALESCE(SUM(zeek_alert_events), 0) AS zeek_alerts,
+                       COALESCE(SUM(suricata_alert_events), 0) AS suricata_alerts,
+                       AVG(detector_supported_ttd_seconds) AS detector_avg_ttd,
+                       AVG(zeek_supported_ttd_seconds) AS zeek_avg_ttd,
+                       AVG(suricata_supported_ttd_seconds) AS suricata_avg_ttd,
+                       MAX(detector_max_processed_pps) AS detector_max_pps,
+                       MAX(zeek_max_processed_pps) AS zeek_max_pps,
+                       MAX(suricata_max_processed_pps) AS suricata_max_pps
+                FROM runs
+                """
+            ).fetchone()
+            scenario_rows = db.execute(
+                """
+                SELECT scenario,
+                       COUNT(*) AS run_count,
+                       COALESCE(SUM(raw_artifacts_retained), 0) AS retained_count,
+                       COALESCE(SUM(detector_alert_events), 0) AS detector_alerts,
+                       COALESCE(SUM(zeek_alert_events), 0) AS zeek_alerts,
+                       COALESCE(SUM(suricata_alert_events), 0) AS suricata_alerts,
+                       COUNT(DISTINCT reliability_loss_percent) AS reliability_loss_levels,
+                       GROUP_CONCAT(DISTINCT reliability_loss_percent) AS reliability_losses,
+                       MAX(started_at) AS latest_started_at
+                FROM runs
+                GROUP BY scenario
+                ORDER BY latest_started_at DESC, scenario
+                """
+            ).fetchall()
+    except sqlite3.Error:
+        return empty
+
+    def sensor_payload(prefix: str) -> dict[str, Any]:
+        return {
+            "alerts": int(totals[f"{prefix}_alerts"] or 0),
+            "avg_ttd_seconds": totals[f"{prefix}_avg_ttd"],
+            "max_processed_pps": totals[f"{prefix}_max_pps"],
+        }
+
+    summary = dict(empty)
+    summary.update(
+        {
+            "exists": True,
+            "total_runs": int(totals["total_runs"] or 0),
+            "retained_runs": int(totals["retained_runs"] or 0),
+            "pcap_runs": int(totals["pcap_runs"] or 0),
+            "first_started_at": totals["first_started_at"],
+            "latest_started_at": totals["latest_started_at"],
+            "sensor_totals": {
+                "detector": sensor_payload("detector"),
+                "zeek": sensor_payload("zeek"),
+                "suricata": sensor_payload("suricata"),
+            },
+            "scenarios": [
+                {
+                    "scenario": row["scenario"],
+                    "label": pretty_label(str(row["scenario"])),
+                    "run_count": int(row["run_count"] or 0),
+                    "retained_count": int(row["retained_count"] or 0),
+                    "detector_alerts": int(row["detector_alerts"] or 0),
+                    "zeek_alerts": int(row["zeek_alerts"] or 0),
+                    "suricata_alerts": int(row["suricata_alerts"] or 0),
+                    "reliability_loss_levels": int(row["reliability_loss_levels"] or 0),
+                    "reliability_losses": row["reliability_losses"] or "",
+                    "latest_started_at": row["latest_started_at"],
+                }
+                for row in scenario_rows
+            ],
+        }
+    )
+    return summary
 
 
 def extract_artifacts_path(log_path: Path) -> str | None:
@@ -654,7 +791,7 @@ def build_status_payload() -> dict[str, Any]:
         if isinstance(attacker, dict) and not attacker.get("ip"):
             attacker["ip"] = detector_state.get("known_attacker_ip") or ""
     latest_result = newest_result_dir()
-    latest_result_payload = latest_result_summary(latest_result)
+    latest_result_payload = latest_result_from_db() or latest_result_summary(latest_result)
     return {
         "generated_at": utc_now(),
         "lab": lab,
@@ -675,6 +812,7 @@ def build_status_payload() -> dict[str, Any]:
         "job": JOB_MANAGER.state(),
         "scenarios": scenario_catalog(),
         "latest_result": latest_result_payload,
+        "results_db": results_db_summary(),
         "hints": {
             "sudo": "Start the dashboard via `make demo-ui` so browser actions inherit the required privileges.",
             "wireshark": "The Wireshark button tries to open the desktop app on the mirrored switch port.",
@@ -774,9 +912,8 @@ def run_action(payload: dict[str, Any]) -> dict[str, Any]:
     if action == "run_scenario":
         scenario = str(payload.get("scenario") or "").strip()
         duration = clamp_duration(payload.get("duration"))
-        visibility = clamp_visibility(payload.get("visibility"))
-        workers = clamp_workers(payload.get("workers"))
-        takeover_enabled = bool(payload.get("takeover_enabled", True))
+        loss_percent = clamp_loss_percent(payload.get("netem_loss", payload.get("reliability")))
+        debug_artifacts = bool(payload.get("debug_artifacts"))
         script_path = SCENARIO_SCRIPTS.get(scenario)
         if not script_path:
             return {"ok": False, "message": f"Unknown scenario: {scenario}"}
@@ -784,21 +921,18 @@ def run_action(payload: dict[str, Any]) -> dict[str, Any]:
         env_parts = [
             "IPERF_ENABLE=0",
             "POST_ATTACK_SETTLE_SECONDS=0",
-            "KEEP_DEBUG_ARTIFACTS=0",
-            "PCAP_ENABLE=1",
-            "GUEST_PCAP_ENABLE=0",
-            "PCAP_SUMMARIES_ENABLE=0",
-            "PCAP_RETENTION_POLICY=first-run-per-scenario",
-            f"SENSOR_VISIBILITY_PERCENT={visibility}",
-            f"DHCP_STARVATION_WORKERS={workers}",
-            f"TAKEOVER_ENABLE={1 if takeover_enabled else 0}",
+            f"KEEP_DEBUG_ARTIFACTS={1 if debug_artifacts else 0}",
+            f"PCAP_ENABLE={1 if debug_artifacts else 0}",
+            f"PORT_PCAP_ENABLE={1 if debug_artifacts else 0}",
+            f"GUEST_PCAP_ENABLE={1 if debug_artifacts else 0}",
+            f"PCAP_SUMMARIES_ENABLE={1 if debug_artifacts else 0}",
+            f"RUN_SUMMARY_ENABLE={1 if debug_artifacts else 0}",
+            f"PCAP_RETENTION_POLICY={'keep' if debug_artifacts else 'none'}",
+            f"RELIABILITY_NETEM_LOSS_PERCENT={loss_percent}",
         ]
         script_args = [shlex.quote(str(script_path)), shlex.quote(str(duration))]
-        if scenario.startswith("visibility-"):
-            script_args.append(shlex.quote(str(visibility)))
-        elif scenario == "dhcp-starvation-rogue-dhcp":
-            script_args.append(shlex.quote(str(workers)))
-            script_args.append(shlex.quote("1" if takeover_enabled else "0"))
+        if scenario.startswith("reliability-"):
+            script_args.append(shlex.quote(str(loss_percent)))
         inner = " ".join(env_parts + script_args)
         JOB_MANAGER.start(
             kind="scenario",
@@ -849,9 +983,19 @@ class DemoRequestHandler(SimpleHTTPRequestHandler):
                 self.wfile.write(data)
             return
         if parsed.path == "/api/download/latest-run.zip":
-            state = JOB_MANAGER.state()
-            last = state.get("last_completed") or {}
-            run_path = Path(str(last.get("artifacts_path") or "")) if last.get("artifacts_path") else newest_result_dir()
+            latest_payload = latest_result_from_db()
+            if latest_payload is not None:
+                if not latest_payload.get("can_download"):
+                    self._send_json(
+                        {"ok": False, "message": "Latest run artifacts were not retained. Enable debug artifacts before launching the run."},
+                        status=HTTPStatus.NOT_FOUND,
+                    )
+                    return
+                run_path = Path(str(latest_payload.get("path") or ""))
+            else:
+                state = JOB_MANAGER.state()
+                last = state.get("last_completed") or {}
+                run_path = Path(str(last.get("artifacts_path") or "")) if last.get("artifacts_path") else newest_result_dir()
             if not run_path or not run_path.exists():
                 self._send_json({"ok": False, "message": "No completed run is available yet."}, status=HTTPStatus.NOT_FOUND)
                 return

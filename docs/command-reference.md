@@ -20,8 +20,8 @@ make baseline
 make smoke-test
 make scenario-arp-mitm-dns
 make scenario-dhcp-spoof
-make scenario-dhcp-starvation
-make scenario-dhcp-starvation-rogue-dhcp
+make scenario-reliability-arp-mitm-dns LOSS=5
+make scenario-reliability-dhcp-spoof LOSS=5
 ```
 
 ## Planned Evaluations
@@ -29,20 +29,9 @@ make scenario-dhcp-starvation-rogue-dhcp
 ```bash
 make experiment-plan
 make experiment-plan-extra
-make visibility-plan
-make starvation-takeover-plan
-```
-
-Run only DHCP starvation through the main pipeline:
-
-```bash
-WARMUP_RUNS=0 MEASURED_RUNS=10 PLAN_SCENARIOS="dhcp-starvation" make experiment-plan
-```
-
-Keep the default warm-up and still do 10 measured DHCP-starvation runs:
-
-```bash
-WARMUP_RUNS=1 MEASURED_RUNS=10 PLAN_SCENARIOS="dhcp-starvation" make experiment-plan
+make reliability RUNS=3
+make reliability-plan
+make overload-plan
 ```
 
 Resume or trim a plan:
@@ -50,14 +39,15 @@ Resume or trim a plan:
 ```bash
 make experiment-plan ARGS="--skip 2"
 make experiment-plan ARGS="--start 11"
-make experiment-plan ARGS="--skip-scenario baseline"
-make experiment-plan-extra ARGS="--start-scenario dhcp-starvation-rogue-dhcp"
+make experiment-plan ARGS="--skip-scenario arp-mitm-forward"
+make experiment-plan-extra
 ```
 
 ## Report Generation
 
 ```bash
 make summarize
+make results-db-overview
 make experiment-report
 make experiment-report-extra
 ```
@@ -72,23 +62,21 @@ make scenario-arp-poison-no-forward
 make scenario-arp-mitm-forward
 make scenario-arp-mitm-dns
 make scenario-dhcp-spoof
-make scenario-dhcp-starvation
-make scenario-dhcp-starvation-rogue-dhcp
+make scenario-reliability-arp-mitm-dns
+make scenario-reliability-dhcp-spoof
 make scenario-mitigation-recovery
 ```
 
 Run just one focused scenario:
 
 ```bash
-make scenario-arp-mitm-dns DURATION=90
-make scenario-dhcp-spoof DURATION=60
-make scenario-dhcp-starvation DURATION=20 WORKERS=1
-make scenario-dhcp-starvation-rogue-dhcp DURATION=90 WORKERS=32 TAKEOVER=1
+make scenario-arp-mitm-dns DURATION=45
+make scenario-dhcp-spoof DURATION=30
+make scenario-reliability-arp-mitm-dns DURATION=30 LOSS=10
+make scenario-reliability-dhcp-spoof DURATION=20 LOSS=10
 ```
 
 Those commands create a single run under `results/` without running the full smoke matrix or experiment plan.
-
-Use `TAKEOVER=0` for the single-scenario DHCP lease-pool flood without the rogue-DHCP takeover phase. Use `TAKEOVER_ENABLE=0 make starvation-takeover-plan` for the planned worker sweep without takeover.
 
 ## Quick Validation
 
@@ -123,15 +111,29 @@ Current Suricata note:
 
 - `ZEEK_ENABLE=0`
 - `SURICATA_ENABLE=0`
-- `PCAP_ENABLE=0`
+- `PCAP_ENABLE=1` to enable the aggregate sensor pcap
+- `PORT_PCAP_ENABLE=1` to enable per-switch-port pcaps
+- `PORT_PCAP_ROLES="gateway victim attacker"` to choose which OVS/libvirt ports get individual pcaps
 - `KEEP_DEBUG_ARTIFACTS=1`
-- `WARMUP_RUNS=0` / `MEASURED_RUNS=10` for focused pipeline subsets
-- `PLAN_SCENARIOS="dhcp-starvation"` to restrict the main plan to one scenario
+- `WARMUP_RUNS=0` / `MEASURED_RUNS=5` for focused pipeline subsets
+- `PLAN_SCENARIOS="dhcp-spoof"` to restrict the main plan to one scenario
+- `RUNS=3 make reliability` to run the thesis reliability set with three repetitions per loss level
+- `RELIABILITY_LOSS_LEVELS="0 5 10"` to choose NetEm loss levels for the reliability plan
+- `RELIABILITY_DELAY_MS=20` / `RELIABILITY_JITTER_MS=5` / `RELIABILITY_RATE=1mbit` to add NetEm delay, jitter, or rate limits
+- `OVERLOAD_PPS_LEVELS="0 100 250 500 1000"` to choose detector packet-rate overload levels
+- `OVERLOAD_SOURCES="victim attacker"` to split overload traffic evenly across switch ports
+- `OVERLOAD_DURATION_SECONDS=20` / `OVERLOAD_TRAFFIC_SECONDS=12` to keep overload runs short
+- `TRAFFIC_PROBE_MODE=synthetic` for the default Scapy/UDP background probe, or `TRAFFIC_PROBE_MODE=legacy` for ping/dig-only background traffic
+- `BASELINE_PERF_PROBES_ENABLE=1` to collect optional baseline `curl` and `iperf3` diagnostics
+- `KEEP_DEBUG_ARTIFACTS=1` to retain raw per-run files; otherwise the durable result is written to `results/experiment-results.sqlite`
+- `LAB_DHCP_SNOOPING_MODE=monitor` to count DHCP server replies from non-gateway ports without blocking them
+- `LAB_DHCP_SNOOPING_MODE=enforce` or legacy `LAB_DHCP_SNOOPING_ENFORCE=1` to make OVS drop DHCP server replies from non-gateway ports
 
 Packet-capture retention notes:
 
-- single scenario commands keep full pcaps by default
-- planned experiment runs keep compact `pcap/wire-truth.json` by default and prune the full pcap afterward
-- visibility and starvation-worker campaigns keep only the first full pcap per scenario by default
+- pcap capture is off by default for single scenarios, planned runs, reliability, and overload campaigns
+- runs use `ground-truth/trusted-observations.sqlite`, built from OVS snooping artifacts, as compact ARP/DNS/DHCP ground truth when pcaps are absent
+- set `PCAP_ENABLE=1 PORT_PCAP_ENABLE=1` when you want full aggregate and per-port pcaps for a focused run
 - guest pcaps and extra `tshark` summaries are off by default in the main and supplementary plans
-- planned runs also disable `iperf` and the post-attack settle tail by default unless explicitly re-enabled
+- planned runs also disable `iperf`, `curl` baseline diagnostics, and the post-attack settle tail by default unless explicitly re-enabled
+- raw run files are pruned after each run unless `KEEP_DEBUG_ARTIFACTS=1`; use `make summarize` or `make results-db-overview` to read the SQLite result table

@@ -40,8 +40,6 @@ The main attack families modeled here are:
 - transparent ARP MITM with forwarding enabled;
 - ARP MITM plus focused DNS spoofing;
 - focused rogue DHCP server advertisement on the LAN;
-- DHCP starvation using spoofed client identities;
-- DHCP lease-pool flooding with optional rogue DHCP takeover;
 - mitigation and recovery after the victim restores the legitimate gateway neighbor entry.
 
 This is a research testbed, not a production hardening framework.
@@ -69,7 +67,8 @@ Where components live:
 - packet captures: optional per run;
 - orchestration and report generation: host machine.
 
-The switch setup treats the gateway-facing port as DHCP-trusted and the victim/attacker-facing ports as untrusted for detector-side DHCP attack interpretation.
+The switch setup treats the gateway-facing port as DHCP-trusted and the victim/attacker-facing ports as untrusted for detector-side DHCP attack interpretation. By default `LAB_DHCP_SNOOPING_MODE=monitor` installs OVS counter flows that detect DHCP server replies from non-gateway ports while still forwarding them; set `LAB_DHCP_SNOOPING_MODE=enforce` or legacy `LAB_DHCP_SNOOPING_ENFORCE=1` only when you want OVS to drop those replies.
+The ingress-port verdict is emitted by the detector as `dhcp_reply_from_untrusted_switch_port_seen`; OVS supplies the port counter, while the detector, Zeek, and Suricata still inspect the mirrored packets themselves.
 The detector is seeded with expected MAC identities and the trusted DHCP server, but it learns victim and attacker IP bindings from observed DHCP and traffic rather than from host-provided IP arguments.
 Forwarding attacks deliberately suppress Linux ICMP redirects on the attacker so the ARP and DNS MITM behavior is measured cleanly without router-side redirect noise.
 On the current host Suricata build/config, ARP comparison rules may still be unavailable; in that case Suricata runs as a DHCP+DNS+ICMP comparator and the run summary states that explicitly.
@@ -85,14 +84,14 @@ Main evaluation scenarios:
 - `arp-mitm-forward`
 - `arp-mitm-dns`
 - `dhcp-spoof`
-- `dhcp-starvation`
 - `mitigation-recovery`
 
 Supplementary scenarios:
 
-- `dhcp-starvation-rogue-dhcp`
-- `visibility-arp-mitm-dns`
-- `visibility-dhcp-spoof`
+- `reliability-arp-mitm-dns`
+- `reliability-dhcp-spoof`
+- `overload-arp-mitm-dns`
+- `overload-dhcp-spoof`
 
 The explanatory experiment overview is in [docs/experiments.md](docs/experiments.md), and the exact timing windows are in [docs/scenario-definitions.md](docs/scenario-definitions.md).
 
@@ -127,14 +126,15 @@ Common run toggles:
 - detector: always on for experiment runs;
 - Zeek: enabled by default, disable with `ZEEK_ENABLE=0`;
 - Suricata: enabled by default, disable with `SURICATA_ENABLE=0`;
-- pcap capture: enabled by default, disable with `PCAP_ENABLE=0`.
+- pcap capture: off by default for experiment and scenario runs; enable with `PCAP_ENABLE=1` and optionally `PORT_PCAP_ENABLE=1`. Reliability and overload plans use compact OVS snooping truth without pcaps unless you opt in.
+- raw per-run files: pruned by default after their contents are evaluated and inserted into `results/experiment-results.sqlite`; retain them with `KEEP_DEBUG_ARTIFACTS=1`.
 
 Example:
 
 ```bash
 make baseline
 ZEEK_ENABLE=0 SURICATA_ENABLE=0 make baseline
-PCAP_ENABLE=0 make baseline
+PCAP_ENABLE=1 PORT_PCAP_ENABLE=1 make baseline
 ```
 
 ## Demo Path
@@ -183,9 +183,17 @@ Top-level layout:
 - `docs/`: topology, architecture, experiment, metric, artifact, and command reference pages;
 - `config/`: static config inputs;
 - `libvirt/`: network definitions;
-- `results/`: per-run artifacts and generated reports.
+- `results/`: compact SQLite results DB, optional per-run debug artifacts, and generated reports.
 
-Typical per-run outputs worth keeping:
+Default durable outputs:
+
+- `results/experiment-results.sqlite`
+  - `runs`: one row per experiment run
+  - `truth_counts`: ARP/DNS/DHCP ground-truth counts
+  - `sensor_counts`: Detector/Zeek/Suricata alert counts
+  - `trusted_authorities` and `trusted_observations`: trusted-source snooping data
+
+Per-run files are retained only when `KEEP_DEBUG_ARTIFACTS=1`. In that mode, useful outputs include:
 
 - `run-meta.json`
 - `summary.txt`
@@ -194,7 +202,11 @@ Typical per-run outputs worth keeping:
 - `detector/detector.delta.jsonl`
 - `detector/detector-explained.txt`
 - `pcap/sensor.pcap` when packet capture is enabled
+- `pcap/ports/{gateway,victim,attacker}.pcap` for per-switch-port captures when `PORT_PCAP_ENABLE=1`
+- `pcap/port-map.json` with the OVS/libvirt interface name used for each per-port capture
 - `pcap/wire-truth.json` for compact switch-truth counts and timing when full pcaps are pruned
+- `detector/ovs-switch-truth-snooping.txt` for compact ARP/DNS trust-violation ground truth without pcaps
+- `detector/ovs-dhcp-snooping.txt` for compact DHCP trusted-port ground truth without pcaps
 - `victim/traffic-window.txt`
 - `victim/iperf3.json`
 - `zeek/` when enabled
@@ -208,7 +220,7 @@ When reading a run summary, treat `Wire-truth attack events` and sensor alert co
 - `Detector packet alerts`, `Zeek notices`, `Suricata alerts`
   - raw sensor-side alert counts, which can be larger because repeated spoof packets can alert more than once
 
-By default the run cleanup drops most host, gateway, attacker, and debug-only leftovers. If you want the full raw collection for troubleshooting, run with:
+By default the run cleanup drops raw per-run files after the SQLite rows are written. If you want the full raw collection for troubleshooting, run with:
 
 ```bash
 KEEP_DEBUG_ARTIFACTS=1 make ...
@@ -232,8 +244,8 @@ Resume or trim a plan:
 ```bash
 make experiment-plan ARGS="--skip 2"
 make experiment-plan ARGS="--start 11"
-make experiment-plan ARGS="--skip-scenario baseline"
-make experiment-plan-extra ARGS="--start-scenario dhcp-starvation-rogue-dhcp"
+make experiment-plan ARGS="--skip-scenario arp-mitm-forward"
+make experiment-plan-extra
 ```
 
 Single-scenario commands with the canonical names:
@@ -243,14 +255,14 @@ make scenario-arp-poison-no-forward
 make scenario-arp-mitm-forward
 make scenario-arp-mitm-dns
 make scenario-dhcp-spoof
-make scenario-dhcp-starvation WORKERS=1
-make scenario-dhcp-starvation-rogue-dhcp WORKERS=1 TAKEOVER=1
-make scenario-visibility-arp-mitm-dns VISIBILITY=100
-make scenario-visibility-dhcp-spoof VISIBILITY=100
+make scenario-reliability-arp-mitm-dns LOSS=5
+make scenario-reliability-dhcp-spoof LOSS=5
 make scenario-mitigation-recovery
 ```
 
-The main experiment plan now includes `dhcp-spoof` and `dhcp-starvation`. For DHCP worker scaling, use `make starvation-takeover-plan`: every worker level runs starvation, records real dnsmasq lease occupancy once per second, and can optionally run reactive rogue DHCP takeover probes with `TAKEOVER_ENABLE=1`. Use `TAKEOVER_ENABLE=0` for lease-pool flood only. The visibility campaign is available through `make visibility-plan`; it runs ARP/DNS and DHCP spoofing while reducing the live sensor feed received by Detector, Zeek, and Suricata.
+Run `make baseline` separately as the clean negative-control reference. The main experiment plan starts from attack scenarios, includes `dhcp-spoof` as the focused DHCP attack case, and keeps mitigation out of the default thesis dataset. `make scenario-mitigation-recovery` remains available as a standalone executable scenario. The thesis reliability campaign is available through `make reliability RUNS=3`; it runs ARP/DNS MITM and focused DHCP rogue-server windows from 0% to 100% NetEm packet loss. The generic `make reliability-plan` target remains available for custom packet loss, delay, jitter, rate limits, duplication, reordering, or corruption. The detector packet-rate calibration is available through `make overload-plan`; summarize the estimated ceiling with `make overload-summary`.
+
+Scenario windows use a controlled synthetic traffic probe by default: Python/Scapy emits predictable ICMP load and UDP DNS queries so the detector has stable background packets and the DNS spoofing scenarios have real queries to answer. `curl` and `iperf3` are kept as optional diagnostics rather than core evidence; use `IPERF_ENABLE=1` for scenario windows or `BASELINE_PERF_PROBES_ENABLE=1` for the baseline-only probes.
 
 The generated markdown report now includes a detection-summary section with TP, FP, TN, FN, TPR, FPR, precision, and F1, so the main workflow does not need a separate `make evaluate` command.
 
@@ -293,10 +305,13 @@ make status
 make baseline
 make smoke-test
 make summarize
+make results-db-overview
 make experiment-plan
 make experiment-plan-extra
-make visibility-plan
-make starvation-takeover-plan
+make reliability RUNS=3
+make reliability-plan
+make overload-plan
+make overload-summary
 make experiment-report
 make demo-ui
 make destroy
@@ -305,9 +320,10 @@ make destroy
 Focused pipeline examples:
 
 ```bash
-make scenario-dhcp-starvation DURATION=20 WORKERS=1
-make scenario-dhcp-starvation-rogue-dhcp DURATION=90 WORKERS=32 TAKEOVER=1
-WARMUP_RUNS=0 MEASURED_RUNS=10 PLAN_SCENARIOS="dhcp-starvation" make experiment-plan
+make scenario-dhcp-spoof DURATION=30
+make scenario-reliability-arp-mitm-dns DURATION=30 LOSS=10
+make reliability RUNS=3
+RELIABILITY_LOSS_LEVELS="0 5 10" make reliability-plan
+OVERLOAD_PPS_LEVELS="0 100 250 500 1000" make overload-plan
+make overload-summary
 ```
-
-The last command runs exactly 10 measured DHCP-starvation repetitions through the main experiment pipeline, with no warm-up run. If you want the normal pipeline shape with one warm-up first, set `WARMUP_RUNS=1` instead.

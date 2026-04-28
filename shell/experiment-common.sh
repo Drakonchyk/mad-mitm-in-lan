@@ -6,45 +6,85 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 CAPTURE_PACKET_COUNT="${CAPTURE_PACKET_COUNT:-0}"
 PCAP_RETENTION_POLICY="${PCAP_RETENTION_POLICY:-all}"
-PCAP_ENABLE="${PCAP_ENABLE:-1}"
+PCAP_ENABLE="${PCAP_ENABLE:-0}"
+PORT_PCAP_ENABLE="${PORT_PCAP_ENABLE:-0}"
+PORT_PCAP_ROLES="${PORT_PCAP_ROLES:-gateway victim attacker}"
 GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE:-0}"
 PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE:-0}"
 ZEEK_ENABLE="${ZEEK_ENABLE:-1}"
 SURICATA_ENABLE="${SURICATA_ENABLE:-1}"
 DETECTOR_PACKET_SAMPLE_RATE="${DETECTOR_PACKET_SAMPLE_RATE:-1}"
-SENSOR_VISIBILITY_PERCENT="${SENSOR_VISIBILITY_PERCENT:-100}"
-DHCP_STARVATION_WORKERS="${DHCP_STARVATION_WORKERS:-}"
-ROGUE_DHCP_START_OFFSET_SECONDS="${ROGUE_DHCP_START_OFFSET_SECONDS:-}"
-ROGUE_DHCP_OFFERED_IP="${ROGUE_DHCP_OFFERED_IP:-}"
-TAKEOVER_ENABLE="${TAKEOVER_ENABLE:-1}"
-VISIBILITY_TX_IFACE="${VISIBILITY_TX_IFACE:-mitm-vis-tx}"
-VISIBILITY_RX_IFACE="${VISIBILITY_RX_IFACE:-mitm-vis-rx}"
+RELIABILITY_NETEM_LOSS_PERCENT="${RELIABILITY_NETEM_LOSS_PERCENT:-0}"
+RELIABILITY_NETEM_DELAY_MS="${RELIABILITY_NETEM_DELAY_MS:-0}"
+RELIABILITY_NETEM_JITTER_MS="${RELIABILITY_NETEM_JITTER_MS:-0}"
+RELIABILITY_NETEM_RATE="${RELIABILITY_NETEM_RATE:-}"
+RELIABILITY_NETEM_DUPLICATE_PERCENT="${RELIABILITY_NETEM_DUPLICATE_PERCENT:-0}"
+RELIABILITY_NETEM_REORDER_PERCENT="${RELIABILITY_NETEM_REORDER_PERCENT:-0}"
+RELIABILITY_NETEM_CORRUPT_PERCENT="${RELIABILITY_NETEM_CORRUPT_PERCENT:-0}"
+RELIABILITY_TX_IFACE="${RELIABILITY_TX_IFACE:-mitm-rel-tx}"
+RELIABILITY_RX_IFACE="${RELIABILITY_RX_IFACE:-mitm-rel-rx}"
 DETECTOR_HEARTBEAT_SECONDS="${DETECTOR_HEARTBEAT_SECONDS:-10}"
 KEEP_DEBUG_ARTIFACTS="${KEEP_DEBUG_ARTIFACTS:-0}"
+MIN_FREE_MB_FOR_PCAPS="${MIN_FREE_MB_FOR_PCAPS:-2048}"
+STALE_CAPTURE_CLEANUP_ENABLE="${STALE_CAPTURE_CLEANUP_ENABLE:-1}"
 ZEEK_ACTIVE=0
 SURICATA_ACTIVE=0
 SURICATA_ARP_RULE_ACTIVE=0
 SURICATA_ARP_RULE_MODE="disabled"
 SURICATA_ARP_RULE_NOTE=""
 PCAP_ACTIVE=0
-VISIBILITY_ACTIVE=0
+PORT_PCAP_ACTIVE=0
+PORT_PCAP_CAPTURE_ROLES=()
+PORT_PCAP_CAPTURE_LABELS=()
+PORT_PCAP_CAPTURE_IFACES=()
+RELIABILITY_NETEM_ACTIVE=0
 EFFECTIVE_SENSOR_PORT="${LAB_SWITCH_SENSOR_PORT}"
 
 lab_python_module() {
   PYTHONPATH="${LAB_DIR}/python${PYTHONPATH:+:${PYTHONPATH}}" python3 -m "$@"
 }
 
-host_python_with_scapy() {
-  local candidate
+run_root_host_bash_lc() {
+  local script="$1"
+  local unit
 
-  for candidate in \
-    "${MITM_LAB_HOST_PYTHON:-}" \
-    /usr/bin/python3 \
-    python3 \
-    python; do
+  if [[ $(id -u) -eq 0 ]]; then
+    bash -lc "${script}"
+    return
+  fi
+
+  if [[ "${MITM_LAB_ROOT_VIA_SYSTEMD_RUN:-1}" == "1" ]] && command -v systemd-run >/dev/null 2>&1; then
+    unit="mitm-lab-root-${$}-${RANDOM}"
+    if sudo systemd-run --wait --pipe --collect --quiet --unit="${unit}" /bin/bash -lc "${script}"; then
+      return
+    fi
+  fi
+
+  sudo bash -lc "${script}"
+}
+
+host_python_with_scapy() {
+  local candidates=()
+  local candidate resolved seen
+  local -A tried=()
+
+  if [[ -n "${MITM_LAB_HOST_PYTHON:-}" ]]; then
+    candidates+=("${MITM_LAB_HOST_PYTHON}")
+  fi
+  candidates+=(/usr/bin/python3 python3 python)
+
+  for candidate in "${candidates[@]}"; do
     [[ -n "${candidate}" ]] || continue
-    if command -v "${candidate}" >/dev/null 2>&1 && "${candidate}" -c 'import scapy.all' >/dev/null 2>&1; then
-      printf '%s\n' "${candidate}"
+    if ! resolved="$(command -v "${candidate}" 2>/dev/null)"; then
+      continue
+    fi
+    seen="${resolved}"
+    if [[ -n "${tried[${seen}]:-}" ]]; then
+      continue
+    fi
+    tried["${seen}"]=1
+    if "${resolved}" -c 'import scapy.all' >/dev/null 2>&1; then
+      printf '%s\n' "${resolved}"
       return 0
     fi
   done
@@ -52,11 +92,12 @@ host_python_with_scapy() {
   return 1
 }
 
-visibility_percent() {
-  local value="${SENSOR_VISIBILITY_PERCENT}"
+percent_value() {
+  local name="$1"
+  local value="$2"
   if ! [[ "${value}" =~ ^[0-9]+$ ]]; then
-    warn "Invalid SENSOR_VISIBILITY_PERCENT=${value}; using 100"
-    printf '100\n'
+    warn "Invalid ${name}=${value}; using 0"
+    printf '0\n'
     return 0
   fi
   if (( value < 0 )); then
@@ -67,18 +108,145 @@ visibility_percent() {
   printf '%s\n' "${value}"
 }
 
-visibility_degradation_requested() {
-  local percent
-  percent="$(visibility_percent)"
-  (( percent < 100 ))
+nonnegative_int_value() {
+  local name="$1"
+  local value="$2"
+  if ! [[ "${value}" =~ ^[0-9]+$ ]]; then
+    warn "Invalid ${name}=${value}; using 0"
+    printf '0\n'
+    return 0
+  fi
+  printf '%s\n' "${value}"
+}
+
+reliability_netem_requested() {
+  local loss duplicate reorder corrupt delay jitter
+  loss="$(percent_value RELIABILITY_NETEM_LOSS_PERCENT "${RELIABILITY_NETEM_LOSS_PERCENT}")"
+  duplicate="$(percent_value RELIABILITY_NETEM_DUPLICATE_PERCENT "${RELIABILITY_NETEM_DUPLICATE_PERCENT}")"
+  reorder="$(percent_value RELIABILITY_NETEM_REORDER_PERCENT "${RELIABILITY_NETEM_REORDER_PERCENT}")"
+  corrupt="$(percent_value RELIABILITY_NETEM_CORRUPT_PERCENT "${RELIABILITY_NETEM_CORRUPT_PERCENT}")"
+  delay="$(nonnegative_int_value RELIABILITY_NETEM_DELAY_MS "${RELIABILITY_NETEM_DELAY_MS}")"
+  jitter="$(nonnegative_int_value RELIABILITY_NETEM_JITTER_MS "${RELIABILITY_NETEM_JITTER_MS}")"
+  (( loss > 0 || duplicate > 0 || reorder > 0 || corrupt > 0 || delay > 0 || jitter > 0 || ${#RELIABILITY_NETEM_RATE} > 0 ))
 }
 
 require_experiment_tools() {
   require_cmd ssh
   require_cmd scp
   require_cmd python3
+  cleanup_stale_lab_capture_processes
+  guard_low_disk_pcap_defaults
+  if reliability_netem_requested; then
+    require_cmd tc
+    require_cmd ovs-vsctl
+    require_cmd ip
+  fi
   if pcap_requested; then
     require_cmd tshark
+  fi
+}
+
+cleanup_stale_lab_capture_processes() {
+  local stopped
+
+  if [[ "${STALE_CAPTURE_CLEANUP_ENABLE}" != "1" ]]; then
+    return 0
+  fi
+
+  stopped="$(
+    run_root_host_bash_lc '
+      count=0
+      stop_matches() {
+        local signal="$1"
+        for pid in $(pgrep -x tcpdump 2>/dev/null || true); do
+          cmd=$(ps -p "$pid" -o args= 2>/dev/null || true)
+          case "$cmd" in
+            *" -w /tmp/20"*.pcap*)
+              kill -"${signal}" "$pid" 2>/dev/null || true
+              if [[ "${signal}" == "INT" ]]; then
+                count=$((count + 1))
+              fi
+              ;;
+          esac
+        done
+      }
+
+      stop_matches INT
+      sleep 1
+      stop_matches TERM
+      sleep 1
+      stop_matches KILL
+      rm -f /tmp/20*.pcap /tmp/20*.pid /tmp/20*.log 2>/dev/null || true
+      printf "%s\n" "${count}"
+    ' 2>/dev/null || true
+  )"
+
+  if [[ "${stopped}" =~ ^[0-9]+$ ]] && (( stopped > 0 )); then
+    info "Stopped ${stopped} stale host tcpdump capture process(es)"
+  fi
+}
+
+cleanup_stale_remote_lab_capture_processes() {
+  local host stopped total=0
+
+  if [[ "${STALE_CAPTURE_CLEANUP_ENABLE}" != "1" ]]; then
+    return 0
+  fi
+
+  for host in gateway victim attacker; do
+    stopped="$(
+      remote_sudo_bash_lc "${host}" '
+        count=0
+        stop_matches() {
+          local signal="$1"
+          for pid in $(pgrep -x tcpdump 2>/dev/null || true); do
+            cmd=$(ps -p "$pid" -o args= 2>/dev/null || true)
+            case "$cmd" in
+              *" -w /tmp/20"*.pcap*)
+                kill -"${signal}" "$pid" 2>/dev/null || true
+                if [[ "${signal}" == "INT" ]]; then
+                  count=$((count + 1))
+                fi
+                ;;
+            esac
+          done
+        }
+
+        stop_matches INT
+        sleep 1
+        stop_matches TERM
+        sleep 1
+        stop_matches KILL
+        rm -f /tmp/20*.pcap /tmp/20*.pid /tmp/20*.log 2>/dev/null || true
+        printf "%s\n" "${count}"
+      ' 2>/dev/null || true
+    )"
+    if [[ "${stopped}" =~ ^[0-9]+$ ]]; then
+      total=$((total + stopped))
+    fi
+  done
+
+  if (( total > 0 )); then
+    info "Stopped ${total} stale guest tcpdump capture process(es)"
+  fi
+}
+
+guard_low_disk_pcap_defaults() {
+  local available_kb available_mb
+
+  pcap_requested || return 0
+  available_kb="$(df -Pk "$(results_root)" 2>/dev/null | awk 'NR==2 {print $4}')"
+  if ! [[ "${available_kb}" =~ ^[0-9]+$ ]]; then
+    return 0
+  fi
+  available_mb=$((available_kb / 1024))
+  if (( available_mb < MIN_FREE_MB_FOR_PCAPS )) && [[ "${ALLOW_LOW_DISK_PCAPS:-0}" != "1" ]]; then
+    warn "Only ${available_mb} MiB free under results; disabling pcaps for this run. Set ALLOW_LOW_DISK_PCAPS=1 to force captures."
+    PCAP_ENABLE=0
+    PORT_PCAP_ENABLE=0
+    GUEST_PCAP_ENABLE=0
+    PCAP_SUMMARIES_ENABLE=0
+    PCAP_RETENTION_POLICY=none
   fi
 }
 
@@ -107,6 +275,22 @@ guest_pcaps_requested() {
       ;;
     *)
       warn "Unknown GUEST_PCAP_ENABLE value: ${GUEST_PCAP_ENABLE}; disabling guest pcaps"
+      return 1
+      ;;
+  esac
+}
+
+port_pcaps_requested() {
+  pcap_requested || return 1
+  case "${PORT_PCAP_ENABLE}" in
+    1|true|yes|on)
+      return 0
+      ;;
+    0|false|no|off)
+      return 1
+      ;;
+    *)
+      warn "Unknown PORT_PCAP_ENABLE value: ${PORT_PCAP_ENABLE}; disabling per-port pcaps"
       return 1
       ;;
   esac
@@ -149,14 +333,12 @@ render_victim_suricata_rules() {
   local arp_rule_mode="${3:-arp}"
   local attacker_ip victim_ip gateway_ip a b c d attacker_ip_hex
   local attacker_mac attacker_mac_hex gateway_ip_hex victim_ip_hex
-  local starvation_mac_prefix starvation_mac_prefix_hex
-  local m1 m2 m3 m4 m5 m6 p1 p2 p3
+  local m1 m2 m3 m4 m5 m6
 
   attacker_ip="$(lab_host_ip attacker)"
   victim_ip="$(lab_host_ip victim)"
   gateway_ip="${GATEWAY_IP}"
   attacker_mac="${ATTACKER_MAC,,}"
-  starvation_mac_prefix="${DHCP_STARVATION_MAC_PREFIX,,}"
   IFS=. read -r a b c d <<< "${attacker_ip}"
   printf -v attacker_ip_hex '|%02X %02X %02X %02X|' "${a}" "${b}" "${c}" "${d}"
   IFS=. read -r a b c d <<< "${gateway_ip}"
@@ -166,9 +348,6 @@ render_victim_suricata_rules() {
   IFS=: read -r m1 m2 m3 m4 m5 m6 <<< "${attacker_mac}"
   printf -v attacker_mac_hex '|%s %s %s %s %s %s|' \
     "${m1^^}" "${m2^^}" "${m3^^}" "${m4^^}" "${m5^^}" "${m6^^}"
-  IFS=: read -r p1 p2 p3 <<< "${starvation_mac_prefix}"
-  printf -v starvation_mac_prefix_hex '|%s %s %s|' \
-    "${p1^^}" "${p2^^}" "${p3^^}"
 
   {
     if [[ "${include_arp}" == "1" ]]; then
@@ -189,9 +368,7 @@ render_victim_suricata_rules() {
     cat <<EOF
 alert icmp ${attacker_ip} any -> ${victim_ip} any (msg:"MITM-LAB live ICMP redirect from attacker to victim"; itype:5; classtype:attempted-admin; sid:9901001; rev:1;)
 alert udp ${gateway_ip} 53 -> ${victim_ip} any (msg:"MITM-LAB live DNS answer contains attacker IP"; content:"${attacker_ip_hex}"; classtype:bad-unknown; sid:9901002; rev:1;)
-alert udp ${attacker_ip} 67 -> any 68 (msg:"MITM-LAB live rogue DHCP reply from attacker"; content:"|63 82 53 63|"; offset:236; depth:4; classtype:bad-unknown; sid:9901003; rev:1;)
-alert udp any 68 -> any 67 (msg:"MITM-LAB live DHCP starvation discover from spoofed client prefix"; content:"${starvation_mac_prefix_hex}"; offset:28; depth:3; content:"|63 82 53 63 35 01 01|"; offset:236; depth:7; classtype:attempted-dos; sid:9901004; rev:2;)
-alert udp any 68 -> any 67 (msg:"MITM-LAB live DHCP starvation request from spoofed client prefix"; content:"${starvation_mac_prefix_hex}"; offset:28; depth:3; content:"|63 82 53 63 35 01 03|"; offset:236; depth:7; classtype:attempted-dos; sid:9901005; rev:2;)
+alert udp !${gateway_ip} 67 -> any 68 (msg:"MITM-LAB live rogue DHCP reply from non-gateway server"; content:"|63 82 53 63|"; offset:236; depth:4; classtype:bad-unknown; sid:9901003; rev:2;)
 EOF
   } > "${outfile}"
 }
@@ -199,6 +376,7 @@ EOF
 prepare_victim_detector() {
   local rendered_detector
   local detector_path log_path state_path pid_path stdout_path stderr_path host_python
+  local detector_ovs_dhcp_bridge detector_ovs_dhcp_mode
   rendered_detector="$(mktemp)"
   render_victim_detector "${rendered_detector}"
   detector_path="/tmp/mitm-lab-detector-host.py"
@@ -207,6 +385,12 @@ prepare_victim_detector() {
   pid_path="/tmp/mitm-lab-detector-host.pid"
   stdout_path="/tmp/mitm-lab-detector-host.stdout"
   stderr_path="/tmp/mitm-lab-detector-host.stderr"
+  detector_ovs_dhcp_bridge="${LAB_SWITCH_BRIDGE}"
+  detector_ovs_dhcp_mode="$(dhcp_snooping_mode)"
+  if [[ "${DETECTOR_OVS_DHCP_SNOOPING_ENABLE:-1}" != "1" ]]; then
+    detector_ovs_dhcp_bridge=""
+    detector_ovs_dhcp_mode="off"
+  fi
 
   if ! host_python="$(host_python_with_scapy)"; then
     rm -f "${rendered_detector}"
@@ -234,9 +418,11 @@ prepare_victim_detector() {
       MITM_LAB_EXPECTED_DHCP_SERVER_MAC='${GATEWAY_LAB_MAC,,}' \
       MITM_LAB_VICTIM_MAC='${VICTIM_MAC,,}' \
       MITM_LAB_ATTACKER_MAC='${ATTACKER_MAC,,}' \
-      MITM_LAB_DHCP_STARVATION_MAC_PREFIX='${DHCP_STARVATION_MAC_PREFIX,,}' \
       MITM_LAB_PACKET_SAMPLE_RATE='${DETECTOR_PACKET_SAMPLE_RATE}' \
       MITM_LAB_HEARTBEAT_SECONDS='${DETECTOR_HEARTBEAT_SECONDS}' \
+      MITM_LAB_OVS_DHCP_SNOOPING_BRIDGE='${detector_ovs_dhcp_bridge}' \
+      MITM_LAB_OVS_DHCP_SNOOPING_MODE='${detector_ovs_dhcp_mode}' \
+      MITM_LAB_OVS_DHCP_SNOOPING_POLL_SECONDS='${OVS_DHCP_SNOOPING_POLL_SECONDS:-2}' \
       '${host_python}' '${detector_path}' >'${stdout_path}' 2>'${stderr_path}' </dev/null &
     echo \$! > '${pid_path}'
   "
@@ -489,97 +675,143 @@ prepare_victim_suricata() {
   rm -f "${rendered_rules}"
 }
 
-prepare_visibility_sensor() {
-  local percent host_python shim_path stats_path pid_path stdout_path stderr_path
-
-  percent="$(visibility_percent)"
-  EFFECTIVE_SENSOR_PORT="${LAB_SWITCH_SENSOR_PORT}"
-  VISIBILITY_ACTIVE=0
-
-  if (( percent >= 100 )); then
-    return 0
-  fi
-
-  if ! host_python="$(host_python_with_scapy)"; then
-    warn "Visibility degradation needs host Python with Scapy; falling back to full visibility"
-    return 0
-  fi
-
-  shim_path="${LAB_DIR}/shell/tools/visibility-shim.py"
-  stats_path="/tmp/mitm-lab-visibility-shim.json"
-  pid_path="/tmp/mitm-lab-visibility-shim.pid"
-  stdout_path="/tmp/mitm-lab-visibility-shim.stdout"
-  stderr_path="/tmp/mitm-lab-visibility-shim.stderr"
-
-  info "Starting live sensor visibility shim: ${LAB_SWITCH_SENSOR_PORT} -> ${VISIBILITY_RX_IFACE} at ${percent}%"
-  run_root bash -lc "
-    set -euo pipefail
-    if test -f '${pid_path}'; then
-      pid=\$(cat '${pid_path}' 2>/dev/null || true)
-      if [[ -n \"\${pid}\" ]]; then
-        kill -TERM \"\${pid}\" 2>/dev/null || true
-        sleep 1
-      fi
+reliability_netem_args() {
+  local loss duplicate reorder corrupt delay jitter args
+  loss="$(percent_value RELIABILITY_NETEM_LOSS_PERCENT "${RELIABILITY_NETEM_LOSS_PERCENT}")"
+  duplicate="$(percent_value RELIABILITY_NETEM_DUPLICATE_PERCENT "${RELIABILITY_NETEM_DUPLICATE_PERCENT}")"
+  reorder="$(percent_value RELIABILITY_NETEM_REORDER_PERCENT "${RELIABILITY_NETEM_REORDER_PERCENT}")"
+  corrupt="$(percent_value RELIABILITY_NETEM_CORRUPT_PERCENT "${RELIABILITY_NETEM_CORRUPT_PERCENT}")"
+  delay="$(nonnegative_int_value RELIABILITY_NETEM_DELAY_MS "${RELIABILITY_NETEM_DELAY_MS}")"
+  jitter="$(nonnegative_int_value RELIABILITY_NETEM_JITTER_MS "${RELIABILITY_NETEM_JITTER_MS}")"
+  args=()
+  if (( delay > 0 || jitter > 0 )); then
+    args+=("delay" "${delay}ms")
+    if (( jitter > 0 )); then
+      args+=("${jitter}ms")
     fi
-    ip link del '${VISIBILITY_TX_IFACE}' 2>/dev/null || true
-    ip link add '${VISIBILITY_TX_IFACE}' type veth peer name '${VISIBILITY_RX_IFACE}'
-    ip link set '${VISIBILITY_TX_IFACE}' up
-    ip link set '${VISIBILITY_RX_IFACE}' up
-    ip link set '${VISIBILITY_TX_IFACE}' promisc on
-    ip link set '${VISIBILITY_RX_IFACE}' promisc on
-    rm -f '${stats_path}' '${pid_path}' '${stdout_path}' '${stderr_path}'
-    nohup '${host_python}' '${shim_path}' \
-      --input '${LAB_SWITCH_SENSOR_PORT}' \
-      --output '${VISIBILITY_TX_IFACE}' \
-      --visibility '${percent}' \
-      --stats '${stats_path}' \
-      >'${stdout_path}' 2>'${stderr_path}' </dev/null &
-    echo \$! > '${pid_path}'
-  "
-
-  if run_root bash -lc "pid=\$(cat '${pid_path}' 2>/dev/null || true); [[ -n \"\${pid}\" ]] && kill -0 \"\${pid}\" 2>/dev/null"; then
-    EFFECTIVE_SENSOR_PORT="${VISIBILITY_RX_IFACE}"
-    VISIBILITY_ACTIVE=1
-  else
-    warn "Visibility shim did not stay up; falling back to full visibility"
-    run_root ip link del "${VISIBILITY_TX_IFACE}" >/dev/null 2>&1 || true
   fi
+  if (( loss > 0 )); then
+    args+=("loss" "${loss}%")
+  fi
+  if (( duplicate > 0 )); then
+    args+=("duplicate" "${duplicate}%")
+  fi
+  if (( reorder > 0 )); then
+    args+=("reorder" "${reorder}%")
+  fi
+  if (( corrupt > 0 )); then
+    args+=("corrupt" "${corrupt}%")
+  fi
+  if [[ -n "${RELIABILITY_NETEM_RATE}" ]]; then
+    args+=("rate" "${RELIABILITY_NETEM_RATE}")
+  fi
+  printf '%q ' "${args[@]}"
 }
 
-stop_visibility_sensor() {
-  local pid_path="/tmp/mitm-lab-visibility-shim.pid"
+prepare_reliability_netem() {
+  local netem_args
 
-  if [[ "${VISIBILITY_ACTIVE:-0}" != "1" ]]; then
+  EFFECTIVE_SENSOR_PORT="${LAB_SWITCH_SENSOR_PORT}"
+  RELIABILITY_NETEM_ACTIVE=0
+
+  if ! reliability_netem_requested; then
+    return 0
+  fi
+
+  netem_args="$(reliability_netem_args)"
+  info "Starting reliability netem path: ${LAB_SWITCH_SENSOR_PORT} mirror -> ${RELIABILITY_TX_IFACE} -> ${RELIABILITY_RX_IFACE} (${netem_args:-no impairment})"
+  run_root bash -lc "
+    set -euo pipefail
+    ovs-vsctl --if-exists del-port '${LAB_SWITCH_BRIDGE}' '${RELIABILITY_TX_IFACE}' || true
+    ip link del '${RELIABILITY_TX_IFACE}' 2>/dev/null || true
+    ip link add '${RELIABILITY_TX_IFACE}' type veth peer name '${RELIABILITY_RX_IFACE}'
+    ip link set '${RELIABILITY_TX_IFACE}' up
+    ip link set '${RELIABILITY_RX_IFACE}' up
+    ip link set '${RELIABILITY_TX_IFACE}' promisc on
+    ip link set '${RELIABILITY_RX_IFACE}' promisc on
+    ovs-vsctl add-port '${LAB_SWITCH_BRIDGE}' '${RELIABILITY_TX_IFACE}'
+    tc qdisc replace dev '${RELIABILITY_TX_IFACE}' root netem ${netem_args}
+    ovs-vsctl -- --id=@out get Port '${RELIABILITY_TX_IFACE}' -- set Mirror '${LAB_SWITCH_MIRROR}' output-port=@out
+  "
+
+  EFFECTIVE_SENSOR_PORT="${RELIABILITY_RX_IFACE}"
+  RELIABILITY_NETEM_ACTIVE=1
+}
+
+stop_reliability_netem() {
+  if [[ "${RELIABILITY_NETEM_ACTIVE:-0}" != "1" ]]; then
     return 0
   fi
 
   run_root bash -lc "
-    if test -f '${pid_path}'; then
-      pid=\$(cat '${pid_path}' 2>/dev/null || true)
-      if [[ -n \"\${pid}\" ]]; then
-        kill -TERM \"\${pid}\" 2>/dev/null || true
-        for _ in 1 2 3 4 5; do
-          if ! kill -0 \"\${pid}\" 2>/dev/null; then
-            break
-          fi
-          sleep 1
-        done
-        if kill -0 \"\${pid}\" 2>/dev/null; then
-          kill -KILL \"\${pid}\" 2>/dev/null || true
-        fi
-      fi
-    fi
-    ip link del '${VISIBILITY_TX_IFACE}' 2>/dev/null || true
+    set +e
+    ovs-vsctl -- --id=@sensor get Port '${LAB_SWITCH_SENSOR_PORT}' -- set Mirror '${LAB_SWITCH_MIRROR}' output-port=@sensor
+    tc qdisc del dev '${RELIABILITY_TX_IFACE}' root 2>/dev/null
+    ovs-vsctl --if-exists del-port '${LAB_SWITCH_BRIDGE}' '${RELIABILITY_TX_IFACE}'
+    ip link del '${RELIABILITY_TX_IFACE}' 2>/dev/null
   " >/dev/null 2>&1 || true
 }
 
-capture_visibility_stats() {
-  capture_local_command "${RUN_DIR}/detector/visibility-shim-final.json" "
-    if test -f /tmp/mitm-lab-visibility-shim.json; then
-      cat /tmp/mitm-lab-visibility-shim.json
-    else
-      printf '{}\n'
-    fi
+capture_reliability_netem_stats() {
+  capture_local_command "${RUN_DIR}/detector/reliability-netem.txt" "
+    {
+      echo '== qdisc ${RELIABILITY_TX_IFACE} =='
+      tc -s qdisc show dev '${RELIABILITY_TX_IFACE}' 2>/dev/null || true
+      echo '== link ${RELIABILITY_TX_IFACE} =='
+      ip -s link show dev '${RELIABILITY_TX_IFACE}' 2>/dev/null || true
+      echo '== link ${RELIABILITY_RX_IFACE} =='
+      ip -s link show dev '${RELIABILITY_RX_IFACE}' 2>/dev/null || true
+    }
+  "
+}
+
+capture_ovs_dhcp_snooping_stats() {
+  local mode
+  mode="$(dhcp_snooping_mode)"
+
+  capture_local_command "${RUN_DIR}/detector/ovs-dhcp-snooping.txt" "
+    {
+      echo 'generated_at='\"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+      echo 'mode=${mode}'
+      echo 'legacy_enforce=${LAB_DHCP_SNOOPING_ENFORCE:-0}'
+      echo 'bridge=${LAB_SWITCH_BRIDGE}'
+      echo 'trusted_gateway_ip=${GATEWAY_IP}'
+      echo 'trusted_gateway_mac=${GATEWAY_LAB_MAC,,}'
+      echo
+      echo '== bridge external_ids =='
+      sudo -n ovs-vsctl get Bridge '${LAB_SWITCH_BRIDGE}' external_ids 2>/dev/null || ovs-vsctl get Bridge '${LAB_SWITCH_BRIDGE}' external_ids 2>/dev/null || true
+      echo
+      echo '== lab port roles =='
+      sudo -n ovs-vsctl --columns=name,external_ids list Port 2>/dev/null || ovs-vsctl --columns=name,external_ids list Port 2>/dev/null || true
+      echo
+      echo '== interface ofports =='
+      sudo -n ovs-vsctl --columns=name,ofport list Interface 2>/dev/null || ovs-vsctl --columns=name,ofport list Interface 2>/dev/null || true
+      echo
+      echo '== DHCP snooping flows =='
+      sudo -n ovs-ofctl dump-flows '${LAB_SWITCH_BRIDGE}' 'cookie=0x4d49544d/-1' 2>/dev/null || ovs-ofctl dump-flows '${LAB_SWITCH_BRIDGE}' 'cookie=0x4d49544d/-1' 2>/dev/null || true
+    }
+  "
+}
+
+capture_ovs_switch_truth_snooping_stats() {
+  capture_local_command "${RUN_DIR}/detector/ovs-switch-truth-snooping.txt" "
+    {
+      echo 'generated_at='\"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+      echo 'enabled=${LAB_SWITCH_TRUTH_SNOOPING:-1}'
+      echo 'bridge=${LAB_SWITCH_BRIDGE}'
+      echo 'trusted_gateway_ip=${GATEWAY_IP}'
+      echo 'trusted_gateway_mac=${GATEWAY_LAB_MAC,,}'
+      echo 'trusted_dns_ip=${DNS_SERVER}'
+      echo
+      echo '== lab port roles =='
+      sudo -n ovs-vsctl --columns=name,external_ids list Port 2>/dev/null || ovs-vsctl --columns=name,external_ids list Port 2>/dev/null || true
+      echo
+      echo '== interface ofports =='
+      sudo -n ovs-vsctl --columns=name,ofport list Interface 2>/dev/null || ovs-vsctl --columns=name,ofport list Interface 2>/dev/null || true
+      echo
+      echo '== switch truth snooping flows =='
+      sudo -n ovs-ofctl dump-flows '${LAB_SWITCH_BRIDGE}' 'cookie=0x4d49544e/-1' 2>/dev/null || ovs-ofctl dump-flows '${LAB_SWITCH_BRIDGE}' 'cookie=0x4d49544e/-1' 2>/dev/null || true
+    }
   "
 }
 
@@ -739,11 +971,13 @@ prune_run_pcaps_for_policy() {
   fi
 
   rm -f \
-    "${RUN_DIR}/pcap/attacker.pcap" \
-    "${RUN_DIR}/pcap/gateway.pcap" \
-    "${RUN_DIR}/pcap/sensor.pcap" \
-    "${RUN_DIR}/pcap/victim.pcap" \
-    "${RUN_DIR}/pcap/"*.tshark-summary.txt
+	    "${RUN_DIR}/pcap/attacker.pcap" \
+	    "${RUN_DIR}/pcap/gateway.pcap" \
+	    "${RUN_DIR}/pcap/sensor.pcap" \
+	    "${RUN_DIR}/pcap/victim.pcap" \
+	    "${RUN_DIR}/pcap/"*.tshark-summary.txt \
+	    "${RUN_DIR}/pcap/ports/"*.pcap \
+	    "${RUN_DIR}/pcap/ports/"*.tshark-summary.txt
 }
 
 json_number_or_null() {
@@ -797,7 +1031,7 @@ prepare_run_dir() {
   RUN_DIR="$(results_root)/${RUN_ID}-${RUN_SLUG}"
   PCAP_ACTIVE=0
 
-  mkdir -p "${RUN_DIR}/host" "${RUN_DIR}/gateway" "${RUN_DIR}/victim" "${RUN_DIR}/detector" "${RUN_DIR}/attacker" "${RUN_DIR}/pcap"
+  mkdir -p "${RUN_DIR}/host" "${RUN_DIR}/gateway" "${RUN_DIR}/victim" "${RUN_DIR}/detector" "${RUN_DIR}/attacker" "${RUN_DIR}/pcap" "${RUN_DIR}/pcap/ports"
 }
 
 start_lab_and_wait_for_access() {
@@ -812,6 +1046,11 @@ start_lab_and_wait_for_access() {
   info "Waiting for SSH access to ${ATTACKER_NAME}"
   wait_for_lab_ssh attacker
   wait_for_lab_guest_ready attacker iperf3 tcpdump dig curl python3
+  cleanup_stale_remote_lab_capture_processes
+}
+
+refresh_switch_counters_for_run() {
+  "${LAB_DIR}/shell/lab/start-lab.sh" >/dev/null
 }
 
 wait_for_lab_guest_ready() {
@@ -846,7 +1085,8 @@ write_run_meta() {
   local started_at="$2"
   local ended_at="$3"
   local notes="${4:-}"
-  local run_index_json warmup_json duration_json attack_start_json attack_stop_json mitigation_start_json forwarding_json dns_spoof_json spoofed_domains_json
+  local run_index_json warmup_json duration_json attack_start_json attack_stop_json mitigation_start_json forwarding_json dns_spoof_json spoofed_domains_json port_pcap_roles_json overload_sources_json
+  local dhcp_snooping_mode_value dhcp_snooping_enforced_json
 
   run_index_json="$(json_number_or_null "${PLAN_RUN_INDEX:-}")"
   warmup_json="$(json_bool "${PLAN_WARMUP:-0}")"
@@ -857,6 +1097,14 @@ write_run_meta() {
   forwarding_json="$(json_bool "${PLAN_FORWARDING_ENABLED:-0}")"
   dns_spoof_json="$(json_bool "${PLAN_DNS_SPOOF_ENABLED:-0}")"
   spoofed_domains_json="$(json_string_array_from_words "${PLAN_SPOOFED_DOMAINS:-}")"
+  port_pcap_roles_json="$(json_string_array_from_words "${PORT_PCAP_ROLES}")"
+  overload_sources_json="$(json_string_array_from_words "${OVERLOAD_SOURCES:-}")"
+  dhcp_snooping_mode_value="$(dhcp_snooping_mode)"
+  if [[ "${dhcp_snooping_mode_value}" == "enforce" ]]; then
+    dhcp_snooping_enforced_json="true"
+  else
+    dhcp_snooping_enforced_json="false"
+  fi
 
   cat > "${RUN_DIR}/run-meta.json" <<EOF
 {
@@ -868,21 +1116,49 @@ write_run_meta() {
   "capture_packet_count": ${CAPTURE_PACKET_COUNT},
   "pcap_retention_policy": "$(json_escape "${PCAP_RETENTION_POLICY}")",
   "pcap_requested": $(json_bool "${PCAP_ENABLE}"),
+  "port_pcap_requested": $(json_bool "${PORT_PCAP_ENABLE}"),
+  "port_pcap_roles": ${port_pcap_roles_json},
+  "port_pcap_active": $(json_bool "${PORT_PCAP_ACTIVE:-0}"),
+  "port_pcap_map": "pcap/port-map.json",
   "guest_pcap_requested": $(json_bool "${GUEST_PCAP_ENABLE}"),
   "pcap_summaries_requested": $(json_bool "${PCAP_SUMMARIES_ENABLE}"),
   "detector_placement": "switch-sensor-port",
   "detector_interface": "${EFFECTIVE_SENSOR_PORT}",
   "truth_interface": "${LAB_SWITCH_SENSOR_PORT}",
-  "sensor_visibility_percent": $(visibility_percent),
-  "sensor_visibility_active": $(json_bool "${VISIBILITY_ACTIVE:-0}"),
-  "sensor_visibility_model": "live deterministic packet thinning before Detector, Zeek, and Suricata",
-  "dhcp_starvation_workers": $(json_number_or_null "${DHCP_STARVATION_WORKERS}"),
-  "dhcp_starvation_worker_model": "number of parallel DHCP starvation worker threads in the attacker client",
-  "rogue_dhcp_start_offset_seconds": $(json_number_or_null "${ROGUE_DHCP_START_OFFSET_SECONDS}"),
-  "rogue_dhcp_offered_ip": "$(json_escape "${ROGUE_DHCP_OFFERED_IP}")",
-  "takeover_enabled": $(json_bool "${TAKEOVER_ENABLE}"),
-  "takeover_start_mode": "$(json_escape "${TAKEOVER_START_MODE:-fixed}")",
-  "takeover_renew_delay_seconds": $(json_number_or_null "${TAKEOVER_RENEW_DELAY_SECONDS:-}"),
+  "reliability_netem_active": $(json_bool "${RELIABILITY_NETEM_ACTIVE:-0}"),
+  "reliability_netem_model": "OVS mirror output routed through veth and Linux tc netem before Detector, Zeek, and Suricata",
+  "reliability_netem_loss_percent": $(percent_value RELIABILITY_NETEM_LOSS_PERCENT "${RELIABILITY_NETEM_LOSS_PERCENT}"),
+  "reliability_netem_delay_ms": $(nonnegative_int_value RELIABILITY_NETEM_DELAY_MS "${RELIABILITY_NETEM_DELAY_MS}"),
+  "reliability_netem_jitter_ms": $(nonnegative_int_value RELIABILITY_NETEM_JITTER_MS "${RELIABILITY_NETEM_JITTER_MS}"),
+  "reliability_netem_rate": "$(json_escape "${RELIABILITY_NETEM_RATE}")",
+  "reliability_netem_duplicate_percent": $(percent_value RELIABILITY_NETEM_DUPLICATE_PERCENT "${RELIABILITY_NETEM_DUPLICATE_PERCENT}"),
+  "reliability_netem_reorder_percent": $(percent_value RELIABILITY_NETEM_REORDER_PERCENT "${RELIABILITY_NETEM_REORDER_PERCENT}"),
+  "reliability_netem_corrupt_percent": $(percent_value RELIABILITY_NETEM_CORRUPT_PERCENT "${RELIABILITY_NETEM_CORRUPT_PERCENT}"),
+  "reliability_sensor_attack_type": "$(json_escape "${RELIABILITY_SENSOR_ATTACK_TYPE:-}")",
+  "switch_truth_snooping_enabled": $(json_bool "${LAB_SWITCH_TRUTH_SNOOPING:-1}"),
+  "switch_truth_snooping_artifact": "detector/ovs-switch-truth-snooping.txt",
+  "trusted_ground_truth_db": "ground-truth/trusted-observations.sqlite",
+  "traffic_probe_enabled": $(json_bool "${TRAFFIC_PROBE_ENABLE:-0}"),
+  "traffic_probe_mode": "$(json_escape "${TRAFFIC_PROBE_MODE:-none}")",
+  "traffic_probe_pps": $(json_number_or_null "${TRAFFIC_PROBE_PPS:-}"),
+  "traffic_probe_dns_interval_seconds": $(json_number_or_null "${TRAFFIC_PROBE_DNS_INTERVAL_SECONDS:-}"),
+  "traffic_probe_packet_bytes": $(json_number_or_null "${TRAFFIC_PROBE_PACKET_BYTES:-}"),
+  "traffic_probe_artifact": "victim/traffic-window.txt",
+  "overload_total_pps": $(json_number_or_null "${OVERLOAD_TOTAL_PPS:-}"),
+  "overload_pps_per_source": $(json_number_or_null "${OVERLOAD_PPS_PER_SOURCE:-}"),
+  "overload_traffic_seconds": $(json_number_or_null "${OVERLOAD_TRAFFIC_SECONDS:-}"),
+  "overload_packet_bytes": $(json_number_or_null "${OVERLOAD_PACKET_BYTES:-}"),
+  "overload_sources": ${overload_sources_json},
+  "overload_preset": "$(json_escape "${OVERLOAD_PRESET:-}")",
+  "overload_engine": "$(json_escape "${OVERLOAD_ENGINE:-}")",
+  "overload_workers": "$(json_escape "${OVERLOAD_WORKERS:-}")",
+  "overload_pps_per_worker": $(json_number_or_null "${OVERLOAD_PPS_PER_WORKER:-}"),
+  "overload_max_workers_per_source": $(json_number_or_null "${OVERLOAD_MAX_WORKERS_PER_SOURCE:-}"),
+  "overload_flood": $(json_bool "${OVERLOAD_FLOOD:-0}"),
+  "ovs_dhcp_snooping_mode": "${dhcp_snooping_mode_value}",
+  "ovs_dhcp_snooping_enforced": ${dhcp_snooping_enforced_json},
+  "ovs_dhcp_snooping_artifact": "detector/ovs-dhcp-snooping.txt",
+  "detector_ovs_dhcp_snooping_enabled": $(json_bool "${DETECTOR_OVS_DHCP_SNOOPING_ENABLE:-1}"),
   "lab_switch_bridge": "${LAB_SWITCH_BRIDGE}",
   "lab_switch_mirror": "${LAB_SWITCH_MIRROR}",
   "gateway_upstream_ip": "$(gateway_upstream_ip)",
@@ -915,7 +1191,7 @@ EOF
 
 dhcp_lease_snapshot_cmd() {
   cat <<EOF
-sudo python3 - '${VICTIM_MAC,,}' '${ATTACKER_MAC,,}' '${DHCP_STARVATION_MAC_PREFIX,,}' '${LAB_DHCP_RANGE_START}' '${LAB_DHCP_RANGE_END}' <<'PY'
+sudo python3 - '${VICTIM_MAC,,}' '${ATTACKER_MAC,,}' '${LAB_DHCP_RANGE_START}' '${LAB_DHCP_RANGE_END}' <<'PY'
 from datetime import datetime, timezone
 from ipaddress import ip_address
 import json
@@ -924,9 +1200,8 @@ import sys
 
 victim_mac = sys.argv[1].lower()
 attacker_mac = sys.argv[2].lower()
-starvation_prefix = sys.argv[3].lower()
-range_start = ip_address(sys.argv[4])
-range_end = ip_address(sys.argv[5])
+range_start = ip_address(sys.argv[3])
+range_end = ip_address(sys.argv[4])
 pool_total = int(range_end) - int(range_start) + 1
 
 leases = []
@@ -950,17 +1225,14 @@ for candidate in (Path('/var/lib/misc/dnsmasq.leases'), Path('/var/lib/dhcp/dnsm
             'hostname': parts[3] if len(parts) >= 4 else '',
         })
 
-attack_leases = [lease for lease in leases if lease['mac'].startswith(starvation_prefix)]
 payload = {
     'ts': datetime.now(timezone.utc).isoformat(),
     'pool_total': pool_total,
     'taken': len(leases),
-    'attack_taken': len(attack_leases),
-    'normal_taken': len(leases) - len(attack_leases),
     'free': pool_total - len(leases),
     'victim_ip': next((lease['ip'] for lease in leases if lease['mac'] == victim_mac), ''),
     'attacker_ip': next((lease['ip'] for lease in leases if lease['mac'] == attacker_mac), ''),
-    'attack_ips': [lease['ip'] for lease in attack_leases],
+    'leases': leases,
 }
 print(json.dumps(payload, sort_keys=True))
 PY
@@ -971,7 +1243,7 @@ dhcp_lease_monitor_cmd() {
   local duration="${1:-60}"
   local interval="${2:-1}"
   cat <<EOF
-python3 - '${VICTIM_MAC,,}' '${ATTACKER_MAC,,}' '${DHCP_STARVATION_MAC_PREFIX,,}' '${LAB_DHCP_RANGE_START}' '${LAB_DHCP_RANGE_END}' '${duration}' '${interval}' <<'PY'
+python3 - '${VICTIM_MAC,,}' '${ATTACKER_MAC,,}' '${LAB_DHCP_RANGE_START}' '${LAB_DHCP_RANGE_END}' '${duration}' '${interval}' <<'PY'
 from datetime import datetime, timezone
 from ipaddress import ip_address
 import json
@@ -981,11 +1253,10 @@ import time
 
 victim_mac = sys.argv[1].lower()
 attacker_mac = sys.argv[2].lower()
-starvation_prefix = sys.argv[3].lower()
-range_start = ip_address(sys.argv[4])
-range_end = ip_address(sys.argv[5])
-duration = float(sys.argv[6])
-interval = max(float(sys.argv[7]), 0.2)
+range_start = ip_address(sys.argv[3])
+range_end = ip_address(sys.argv[4])
+duration = float(sys.argv[5])
+interval = max(float(sys.argv[6]), 0.2)
 pool_total = int(range_end) - int(range_start) + 1
 
 def snapshot():
@@ -1009,17 +1280,14 @@ def snapshot():
                 'ip': str(lease_ip),
                 'hostname': parts[3] if len(parts) >= 4 else '',
             })
-    attack_leases = [lease for lease in leases if lease['mac'].startswith(starvation_prefix)]
     return {
         'ts': datetime.now(timezone.utc).isoformat(),
         'pool_total': pool_total,
         'taken': len(leases),
-        'attack_taken': len(attack_leases),
-        'normal_taken': len(leases) - len(attack_leases),
         'free': pool_total - len(leases),
         'victim_ip': next((lease['ip'] for lease in leases if lease['mac'] == victim_mac), ''),
         'attacker_ip': next((lease['ip'] for lease in leases if lease['mac'] == attacker_mac), ''),
-        'attack_ips': [lease['ip'] for lease in attack_leases],
+        'leases': leases,
     }
 
 deadline = time.time() + duration
@@ -1137,6 +1405,93 @@ start_local_capture() {
   printf '%s\n' "${pcap}"
 }
 
+lab_switch_port_by_role() {
+  local role="$1"
+  local vm mac
+
+  case "${role}" in
+    gateway)
+      vm="${GATEWAY_NAME}"
+      mac="${GATEWAY_LAB_MAC}"
+      ;;
+    victim)
+      vm="${VICTIM_NAME}"
+      mac="${VICTIM_MAC}"
+      ;;
+    attacker)
+      vm="${ATTACKER_NAME}"
+      mac="${ATTACKER_MAC}"
+      ;;
+    sensor)
+      printf '%s\n' "${LAB_SWITCH_SENSOR_PORT}"
+      return 0
+      ;;
+    *)
+      warn "Unknown PORT_PCAP_ROLES entry: ${role}"
+      return 1
+      ;;
+  esac
+
+  run_hypervisor virsh -c "${LIBVIRT_URI}" domiflist "${vm}" 2>/dev/null \
+    | awk -v wanted="${mac,,}" '
+        BEGIN { IGNORECASE = 1 }
+        $0 ~ /^[[:space:]]*$/ { next }
+        tolower($5) == wanted { print $1; exit }
+      '
+}
+
+write_port_pcap_map() {
+  local outfile="${RUN_DIR}/pcap/port-map.json"
+  local idx role label iface comma=""
+
+  {
+    printf '{\n'
+    printf '  "generated_at": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '  "bridge": "%s",\n' "$(json_escape "${LAB_SWITCH_BRIDGE}")"
+    printf '  "captures": [\n'
+    for idx in "${!PORT_PCAP_CAPTURE_ROLES[@]}"; do
+      role="${PORT_PCAP_CAPTURE_ROLES[$idx]}"
+      label="${PORT_PCAP_CAPTURE_LABELS[$idx]}"
+      iface="${PORT_PCAP_CAPTURE_IFACES[$idx]}"
+      printf '%b    {"role": "%s", "interface": "%s", "label": "%s", "pcap": "pcap/ports/%s.pcap"}' \
+        "${comma}" "$(json_escape "${role}")" "$(json_escape "${iface}")" "$(json_escape "${label}")" "$(json_escape "${role}")"
+      comma=",\n"
+    done
+    printf '\n  ]\n'
+    printf '}\n'
+  } > "${outfile}"
+}
+
+start_switch_port_captures() {
+  local role iface label
+
+  PORT_PCAP_ACTIVE=0
+  PORT_PCAP_CAPTURE_ROLES=()
+  PORT_PCAP_CAPTURE_LABELS=()
+  PORT_PCAP_CAPTURE_IFACES=()
+
+  if ! port_pcaps_requested; then
+    return 0
+  fi
+
+  for role in ${PORT_PCAP_ROLES}; do
+    iface="$(lab_switch_port_by_role "${role}" || true)"
+    if [[ -z "${iface}" ]]; then
+      warn "Could not resolve switch port for ${role}; skipping per-port capture"
+      continue
+    fi
+    label="port-${role}"
+    info "Starting per-port capture for ${role} on ${iface}"
+    start_local_capture "${iface}" "${label}" >/dev/null
+    PORT_PCAP_CAPTURE_ROLES+=("${role}")
+    PORT_PCAP_CAPTURE_LABELS+=("${label}")
+    PORT_PCAP_CAPTURE_IFACES+=("${iface}")
+    PORT_PCAP_ACTIVE=1
+  done
+
+  write_port_pcap_map
+}
+
 stop_local_capture() {
   local label="$1"
 
@@ -1168,6 +1523,73 @@ stop_local_capture() {
       fi
     fi
   " >/dev/null 2>&1 || true
+}
+
+stop_switch_port_captures() {
+  local label
+
+  if [[ "${PORT_PCAP_ACTIVE:-0}" != "1" ]]; then
+    return 0
+  fi
+
+  for label in "${PORT_PCAP_CAPTURE_LABELS[@]}"; do
+    stop_local_capture "${label}"
+  done
+}
+
+cleanup_run_tmp_capture_files() {
+  local host
+
+  if [[ -z "${RUN_ID:-}" || -z "${RUN_SLUG:-}" ]]; then
+    return 0
+  fi
+
+  run_root_host_bash_lc "
+    prefix='/tmp/${RUN_ID}-${RUN_SLUG}-'
+    stop_matches() {
+      local signal=\"\$1\"
+      for pid in \$(pgrep -x tcpdump 2>/dev/null || true); do
+        cmd=\$(ps -p \"\$pid\" -o args= 2>/dev/null || true)
+        case \"\$cmd\" in
+          *\" -w \${prefix}\"*.pcap*) kill -\"\${signal}\" \"\$pid\" 2>/dev/null || true ;;
+        esac
+      done
+    }
+
+    stop_matches INT
+    sleep 1
+    stop_matches TERM
+    sleep 1
+    stop_matches KILL
+  " >/dev/null 2>&1 || true
+
+  run_root rm -f \
+    "/tmp/${RUN_ID}-${RUN_SLUG}-"*.pcap \
+    "/tmp/${RUN_ID}-${RUN_SLUG}-"*.pid \
+    "/tmp/${RUN_ID}-${RUN_SLUG}-"*.log \
+    >/dev/null 2>&1 || true
+
+  for host in gateway victim attacker; do
+    remote_sudo_bash_lc "${host}" "
+      prefix='/tmp/${RUN_ID}-${RUN_SLUG}-'
+      stop_matches() {
+        local signal=\"\$1\"
+        for pid in \$(pgrep -x tcpdump 2>/dev/null || true); do
+          cmd=\$(ps -p \"\$pid\" -o args= 2>/dev/null || true)
+          case \"\$cmd\" in
+            *\" -w \${prefix}\"*.pcap*) kill -\"\${signal}\" \"\$pid\" 2>/dev/null || true ;;
+          esac
+        done
+      }
+
+      stop_matches INT
+      sleep 1
+      stop_matches TERM
+      sleep 1
+      stop_matches KILL
+      rm -f \"\${prefix}\"*.pcap \"\${prefix}\"*.pid \"\${prefix}\"*.log 2>/dev/null || true
+    " >/dev/null 2>&1 || true
+  done
 }
 
 stop_local_detector() {
@@ -1411,17 +1833,14 @@ save_common_state() {
     echo 'generated_at='\"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
     echo 'detector_interface=${EFFECTIVE_SENSOR_PORT}'
     echo 'truth_interface=${LAB_SWITCH_SENSOR_PORT}'
-    echo 'sensor_visibility_percent=$(visibility_percent)'
-    echo 'sensor_visibility_active=${VISIBILITY_ACTIVE:-0}'
-    echo 'dhcp_starvation_workers=${DHCP_STARVATION_WORKERS}'
+    echo 'reliability_netem_active=${RELIABILITY_NETEM_ACTIVE:-0}'
+    echo 'reliability_netem_loss_percent=$(percent_value RELIABILITY_NETEM_LOSS_PERCENT "${RELIABILITY_NETEM_LOSS_PERCENT}")'
+    echo 'reliability_netem_delay_ms=${RELIABILITY_NETEM_DELAY_MS}'
+    echo 'reliability_netem_jitter_ms=${RELIABILITY_NETEM_JITTER_MS}'
+    echo 'reliability_netem_rate=${RELIABILITY_NETEM_RATE}'
     echo 'detector_log=/tmp/mitm-lab-detector-host.jsonl'
     echo 'detector_state=/tmp/mitm-lab-detector-host-state.json'
     echo 'switch_truth_pcap=/tmp/${RUN_ID}-${RUN_SLUG}-sensor.pcap'
-    if test -f /tmp/mitm-lab-visibility-shim.json; then
-      echo
-      echo '== visibility shim =='
-      cat /tmp/mitm-lab-visibility-shim.json
-    fi
     echo
     if test -f /tmp/mitm-lab-detector-host.pid; then
       pid=\$(cat /tmp/mitm-lab-detector-host.pid 2>/dev/null || true)
@@ -1437,8 +1856,8 @@ save_common_state() {
     echo 'generated_at='\"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
     echo 'sensor_interface=${EFFECTIVE_SENSOR_PORT}'
     echo 'truth_interface=${LAB_SWITCH_SENSOR_PORT}'
-    echo 'sensor_visibility_percent=$(visibility_percent)'
-    echo 'dhcp_starvation_workers=${DHCP_STARVATION_WORKERS}'
+    echo 'reliability_netem_active=${RELIABILITY_NETEM_ACTIVE:-0}'
+    echo 'reliability_netem_loss_percent=$(percent_value RELIABILITY_NETEM_LOSS_PERCENT "${RELIABILITY_NETEM_LOSS_PERCENT}")'
     echo 'runtime_root=/tmp/mitm-lab-zeek-host'
     echo 'log_dir=/tmp/mitm-lab-zeek-host/current'
     echo
@@ -1454,8 +1873,8 @@ save_common_state() {
     echo 'generated_at='\"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
     echo 'sensor_interface=${EFFECTIVE_SENSOR_PORT}'
     echo 'truth_interface=${LAB_SWITCH_SENSOR_PORT}'
-    echo 'sensor_visibility_percent=$(visibility_percent)'
-    echo 'dhcp_starvation_workers=${DHCP_STARVATION_WORKERS}'
+    echo 'reliability_netem_active=${RELIABILITY_NETEM_ACTIVE:-0}'
+    echo 'reliability_netem_loss_percent=$(percent_value RELIABILITY_NETEM_LOSS_PERCENT "${RELIABILITY_NETEM_LOSS_PERCENT}")'
     echo 'runtime_root=/tmp/mitm-lab-suricata-host'
     echo 'log_dir=/tmp/mitm-lab-suricata-host/current'
     echo 'arp_rule_enabled=${SURICATA_ARP_RULE_ACTIVE:-0}'
@@ -1583,10 +2002,20 @@ save_capture_files() {
   fi
 
   local sensor_pcap="/tmp/${RUN_ID}-${RUN_SLUG}-sensor.pcap"
+  local idx role label port_pcap
   if should_keep_run_pcaps; then
     capture_local_delta "${sensor_pcap}" 0 "${RUN_DIR}/pcap/sensor.pcap"
   elif [[ -s "${sensor_pcap}" ]]; then
     ln -s "${sensor_pcap}" "${RUN_DIR}/pcap/sensor.pcap"
+  fi
+
+  if should_keep_run_pcaps && [[ "${PORT_PCAP_ACTIVE:-0}" == "1" ]]; then
+    for idx in "${!PORT_PCAP_CAPTURE_ROLES[@]}"; do
+      role="${PORT_PCAP_CAPTURE_ROLES[$idx]}"
+      label="${PORT_PCAP_CAPTURE_LABELS[$idx]}"
+      port_pcap="/tmp/${RUN_ID}-${RUN_SLUG}-${label}.pcap"
+      capture_local_delta "${port_pcap}" 0 "${RUN_DIR}/pcap/ports/${role}.pcap"
+    done
   fi
 
   if should_keep_run_pcaps && guest_pcaps_requested; then
@@ -1667,7 +2096,7 @@ summarize_saved_pcaps() {
 
   while IFS= read -r -d '' pcap_path; do
     write_tshark_summary "${pcap_path}"
-  done < <(find "${RUN_DIR}/pcap" -maxdepth 1 -type f -name '*.pcap' -print0 | sort -z)
+  done < <(find "${RUN_DIR}/pcap" -type f -name '*.pcap' -print0 | sort -z)
 }
 
 materialize_wire_truth_summary() {
@@ -1719,6 +2148,7 @@ capture_victim_zeek_artifacts() {
   fi
 
   [[ -f "${runtime_root}/current/notice.log" ]] && cp "${runtime_root}/current/notice.log" "${notice_path}" 2>/dev/null || true
+  [[ -f "${runtime_root}/current/stats.log" ]] && cp "${runtime_root}/current/stats.log" "${outdir}/stats.log" 2>/dev/null || true
 
   if [[ -f "${runtime_root}/zeek.stdout" ]]; then
     cp "${runtime_root}/zeek.stdout" "${outdir}/zeek.stdout" 2>/dev/null || true
@@ -1768,6 +2198,7 @@ capture_victim_suricata_artifacts() {
   fi
 
   [[ -f "${runtime_root}/current/eve.json" ]] && cp "${runtime_root}/current/eve.json" "${eve_path}" 2>/dev/null || true
+  [[ -f "${runtime_root}/current/stats.log" ]] && cp "${runtime_root}/current/stats.log" "${outdir}/stats.log" 2>/dev/null || true
 
   if [[ -f "${runtime_root}/suricata.stdout" ]]; then
     cp "${runtime_root}/suricata.stdout" "${outdir}/suricata.stdout" 2>/dev/null || true
@@ -1782,9 +2213,6 @@ capture_victim_suricata_artifacts() {
     fi
     if [[ -f "${runtime_root}/current/suricata.log" ]]; then
       cp "${runtime_root}/current/suricata.log" "${outdir}/suricata.log" 2>/dev/null || true
-    fi
-    if [[ -f "${runtime_root}/current/stats.log" ]]; then
-      cp "${runtime_root}/current/stats.log" "${outdir}/stats.log" 2>/dev/null || true
     fi
     if [[ -f "/tmp/mitm-lab-suricata-test.log" ]]; then
       cp "/tmp/mitm-lab-suricata-test.log" "${outdir}/suricata-test.log" 2>/dev/null || true
@@ -1812,35 +2240,8 @@ prune_run_artifacts() {
     return 0
   fi
 
-  rm -f \
-    "${RUN_DIR}/host/versions.txt" \
-    "${RUN_DIR}/gateway/ip-route.txt" \
-    "${RUN_DIR}/gateway/ip-neigh.txt" \
-    "${RUN_DIR}/gateway/ip-neigh-after.txt" \
-    "${RUN_DIR}/gateway/dnsmasq-service.txt" \
-    "${RUN_DIR}/gateway/dnsmasq.delta.log" \
-    "${RUN_DIR}/gateway/iperf-server.log" \
-    "${RUN_DIR}/gateway/versions.txt" \
-    "${RUN_DIR}/detector/status.txt" \
-    "${RUN_DIR}/victim/ip-route.txt" \
-    "${RUN_DIR}/victim/ip-neigh.txt" \
-    "${RUN_DIR}/victim/ip-neigh-after.txt" \
-    "${RUN_DIR}/detector/detector.state.json" \
-    "${RUN_DIR}/victim/post-window-probe.txt" \
-    "${RUN_DIR}/victim/versions.txt" \
-    "${RUN_DIR}/attacker/ip-route.txt" \
-    "${RUN_DIR}/attacker/ip-neigh.txt" \
-    "${RUN_DIR}/attacker/ip-neigh-after.txt" \
-    "${RUN_DIR}/attacker/versions.txt" \
-    "${RUN_DIR}/zeek/status-runtime.txt" \
-    "${RUN_DIR}/zeek/host/runtime-status.txt" \
-    "${RUN_DIR}/zeek/host/zeek.stdout" \
-    "${RUN_DIR}/zeek/host/zeek.stderr" \
-    "${RUN_DIR}/suricata/status-runtime.txt" \
-    "${RUN_DIR}/suricata/host/runtime-status.txt" \
-    "${RUN_DIR}/suricata/host/suricata.stdout" \
-    "${RUN_DIR}/suricata/host/suricata.stderr" \
-    "${RUN_DIR}/suricata/host/suricata-test.log"
+  find "${RUN_DIR}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  rmdir "${RUN_DIR}" 2>/dev/null || true
 }
 
 explain_saved_run() {
@@ -1853,7 +2254,19 @@ evaluate_saved_run() {
     --text-out "${RUN_DIR}/evaluation-summary.txt" >/dev/null 2>&1 || true
 }
 
+upsert_results_db() {
+  local compact_arg=()
+  if [[ "${KEEP_DEBUG_ARTIFACTS}" != "1" ]]; then
+    compact_arg=(--compact)
+  fi
+  lab_python_module metrics.results_db upsert-run "${RUN_DIR}" "${compact_arg[@]}" >/dev/null
+}
+
 write_summary() {
   local target="${1:-${RUN_DIR}}"
-  lab_python_module metrics.summary_cli "${target}" | tee "${target}/summary.txt"
+  if [[ "${KEEP_DEBUG_ARTIFACTS}" == "1" ]]; then
+    lab_python_module metrics.summary_cli "${target}" | tee "${target}/summary.txt"
+  else
+    lab_python_module metrics.summary_cli "${target}"
+  fi
 }

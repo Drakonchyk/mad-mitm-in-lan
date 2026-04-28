@@ -56,7 +56,7 @@ lease_snapshot_json="{}"
 if [[ "${gateway_state,,}" == *"running"* ]]; then
   gateway_ip="$(quick_gateway_ip)"
   lease_snapshot_json="$(
-    lab_ssh gateway "sudo python3 - '${VICTIM_MAC,,}' '${ATTACKER_MAC,,}' '${DHCP_STARVATION_MAC_PREFIX,,}' '${LAB_DHCP_RANGE_START}' '${LAB_DHCP_RANGE_END}' <<'PY'
+    lab_ssh gateway "sudo python3 - '${VICTIM_MAC,,}' '${ATTACKER_MAC,,}' '${LAB_DHCP_RANGE_START}' '${LAB_DHCP_RANGE_END}' <<'PY'
 from ipaddress import ip_address
 import json
 from pathlib import Path
@@ -64,9 +64,8 @@ import sys
 
 victim_mac = sys.argv[1].lower()
 attacker_mac = sys.argv[2].lower()
-starvation_prefix = sys.argv[3].lower()
-range_start = ip_address(sys.argv[4])
-range_end = ip_address(sys.argv[5])
+range_start = ip_address(sys.argv[3])
+range_end = ip_address(sys.argv[4])
 
 leases = []
 for candidate in (Path('/var/lib/misc/dnsmasq.leases'), Path('/var/lib/dhcp/dnsmasq.leases')):
@@ -89,16 +88,13 @@ for candidate in (Path('/var/lib/misc/dnsmasq.leases'), Path('/var/lib/dhcp/dnsm
             'hostname': parts[3] if len(parts) >= 4 else '',
         })
 
-attack_leases = [lease for lease in leases if lease['mac'].startswith(starvation_prefix)]
 payload = {
     'victim_ip': next((lease['ip'] for lease in leases if lease['mac'] == victim_mac), ''),
     'attacker_ip': next((lease['ip'] for lease in leases if lease['mac'] == attacker_mac), ''),
     'pool_total': int(range_end) - int(range_start) + 1,
     'taken': len(leases),
-    'attack_taken': len(attack_leases),
-    'normal_taken': len(leases) - len(attack_leases),
     'free': (int(range_end) - int(range_start) + 1) - len(leases),
-    'attack_ips': [lease['ip'] for lease in attack_leases[:8]],
+    'leases': leases,
 }
 print(json.dumps(payload, sort_keys=True))
 PY" 2>/dev/null || printf '{}'

@@ -4,7 +4,7 @@ set -euo pipefail
 # shellcheck source=/dev/null
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-DURATION="${1:-${DURATION:-90}}"
+DURATION="${1:-${DURATION:-30}}"
 REMOTE_ROOT="$(research_workspace_root)"
 ATTACK_CMD="cd '${REMOTE_ROOT}' && exec env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf arp-poison --interface vnic0"
 

@@ -10,10 +10,9 @@ from reporting.plots import build_report_plots
 from reporting.tables import (
     build_table_thesis_detector_semantics,
     build_table_thesis_main_detection,
+    build_table_thesis_reliability_thresholds,
     build_table_thesis_recovery_timing,
-    build_table_thesis_starvation_scaling,
     build_table_thesis_supplementary_detection,
-    build_table_thesis_visibility_thresholds,
 )
 
 
@@ -55,8 +54,7 @@ class ExperimentReportBuilder:
             ("Thesis Tables / Main Detection And Timing", build_table_thesis_main_detection),
             ("Thesis Tables / Supplementary Campaign Summary", build_table_thesis_supplementary_detection),
             ("Thesis Tables / Detector Semantic Coverage", build_table_thesis_detector_semantics),
-            ("Thesis Tables / Visibility Thresholds", build_table_thesis_visibility_thresholds),
-            ("Thesis Tables / DHCP Starvation Scaling", build_table_thesis_starvation_scaling),
+            ("Thesis Tables / Reliability Thresholds", build_table_thesis_reliability_thresholds),
             ("Thesis Tables / Recovery Timing", build_table_thesis_recovery_timing),
         ]
         tables: dict[str, Path] = {}

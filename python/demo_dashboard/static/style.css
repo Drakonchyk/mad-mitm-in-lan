@@ -290,6 +290,36 @@ h1 {
   gap: 10px;
 }
 
+.sensor-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.db-scenario-list {
+  display: grid;
+  gap: 8px;
+  max-height: 300px;
+  overflow: auto;
+}
+
+.scenario-summary-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.scenario-summary-counts {
+  display: inline-flex;
+  align-items: center;
+  justify-content: end;
+  gap: 8px;
+  white-space: nowrap;
+}
+
 .mini-metric {
   padding: 12px;
   background: var(--paper-strong);
@@ -407,7 +437,9 @@ code {
   }
 
   .hero-actions,
-  .duration-row {
+  .duration-row,
+  .tool-counters,
+  .sensor-summary-grid {
     grid-template-columns: 1fr;
   }
 

@@ -1,15 +1,12 @@
 const durationRange = document.getElementById("durationRange");
 const durationNumber = document.getElementById("durationNumber");
-const visibilityRange = document.getElementById("visibilityRange");
-const visibilityNumber = document.getElementById("visibilityNumber");
-const visibilityOptions = document.getElementById("visibilityOptions");
-const takeoverOptions = document.getElementById("takeoverOptions");
-const takeoverEnabled = document.getElementById("takeoverEnabled");
-const workersRange = document.getElementById("workersRange");
-const workersNumber = document.getElementById("workersNumber");
+const reliabilityRange = document.getElementById("reliabilityRange");
+const reliabilityNumber = document.getElementById("reliabilityNumber");
+const reliabilityOptions = document.getElementById("reliabilityOptions");
 const scenarioButtons = document.getElementById("scenarioButtons");
 const runSelectedScenario = document.getElementById("runSelectedScenario");
 const downloadLatestRun = document.getElementById("downloadLatestRun");
+const debugArtifacts = document.getElementById("debugArtifacts");
 const messageBar = document.getElementById("messageBar");
 
 const toolCards = {
@@ -36,6 +33,10 @@ let cachedScenarios = [];
 let busy = false;
 let selectedScenario = "";
 
+function scenarioByName(name) {
+  return cachedScenarios.find((scenario) => scenario.name === name);
+}
+
 function setMessage(text, tone = "muted") {
   messageBar.className = `message ${tone}`;
   messageBar.textContent = text;
@@ -47,24 +48,16 @@ function syncDurationInputs(value) {
   durationNumber.value = clamped;
 }
 
-function syncVisibilityInputs(value) {
+function syncReliabilityInputs(value) {
   const clamped = Math.max(0, Math.min(100, Number(value) || 0));
-  visibilityRange.value = clamped;
-  visibilityNumber.value = clamped;
-}
-
-function syncWorkersInputs(value) {
-  const clamped = Math.max(1, Math.min(108, Number(value) || 1));
-  workersRange.value = clamped;
-  workersNumber.value = clamped;
+  reliabilityRange.value = clamped;
+  reliabilityNumber.value = clamped;
 }
 
 durationRange.addEventListener("input", (event) => syncDurationInputs(event.target.value));
 durationNumber.addEventListener("input", (event) => syncDurationInputs(event.target.value));
-visibilityRange.addEventListener("input", (event) => syncVisibilityInputs(event.target.value));
-visibilityNumber.addEventListener("input", (event) => syncVisibilityInputs(event.target.value));
-workersRange.addEventListener("input", (event) => syncWorkersInputs(event.target.value));
-workersNumber.addEventListener("input", (event) => syncWorkersInputs(event.target.value));
+reliabilityRange.addEventListener("input", (event) => syncReliabilityInputs(event.target.value));
+reliabilityNumber.addEventListener("input", (event) => syncReliabilityInputs(event.target.value));
 
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, {
@@ -78,46 +71,52 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
-function scenarioNeedsVisibility(name) {
-  return name === "visibility";
+function scenarioNeedsReliability(name) {
+  return name === "reliability";
 }
 
-function scenarioSupportsTakeover(name) {
-  return name === "dhcp-starvation-rogue-dhcp";
-}
-
-function visibilityScenarioName() {
-  return document.querySelector("input[name='visibilityScenario']:checked")?.value || "visibility-arp-mitm-dns";
+function reliabilityScenarioName() {
+  return document.querySelector("input[name='reliabilityScenario']:checked")?.value || "reliability-arp-mitm-dns";
 }
 
 function effectiveScenarioName() {
-  return selectedScenario === "visibility" ? visibilityScenarioName() : selectedScenario;
+  return selectedScenario === "reliability" ? reliabilityScenarioName() : selectedScenario;
 }
 
 function selectedScenarioLabel() {
   if (!selectedScenario) {
     return "";
   }
-  if (selectedScenario === "visibility") {
-    return visibilityScenarioName() === "visibility-dhcp-spoof" ? "Visibility DHCP" : "Visibility ARP + DNS";
+  if (selectedScenario === "reliability") {
+    return reliabilityScenarioName() === "reliability-dhcp-spoof" ? "Reliability DHCP Rogue" : "Reliability ARP + DNS";
   }
-  return cachedScenarios.find((scenario) => scenario.name === selectedScenario)?.label || selectedScenario;
+  return scenarioByName(selectedScenario)?.label || selectedScenario;
+}
+
+function scenarioDefaultDuration(name) {
+  return Number(scenarioByName(name)?.default_duration || 30);
+}
+
+function syncSelectedScenarioDuration() {
+  const scenarioName = effectiveScenarioName();
+  if (scenarioName) {
+    syncDurationInputs(scenarioDefaultDuration(scenarioName));
+  }
 }
 
 function updateScenarioControls() {
-  visibilityOptions.classList.toggle("hidden", !scenarioNeedsVisibility(selectedScenario));
-  takeoverOptions.classList.toggle("hidden", !scenarioSupportsTakeover(selectedScenario));
+  reliabilityOptions.classList.toggle("hidden", !scenarioNeedsReliability(selectedScenario));
   runSelectedScenario.disabled = busy || !selectedScenario;
   runSelectedScenario.textContent = selectedScenario ? `Run ${selectedScenarioLabel()}` : "Run Selected Scenario";
 }
 
 function scenarioButtonRows() {
-  const rows = cachedScenarios.filter((scenario) => !scenario.name.startsWith("visibility-"));
-  const firstVisibility = cachedScenarios.find((scenario) => scenario.name.startsWith("visibility-"));
-  if (firstVisibility) {
+  const rows = cachedScenarios.filter((scenario) => !scenario.name.startsWith("reliability-"));
+  const firstReliability = cachedScenarios.find((scenario) => scenario.name.startsWith("reliability-"));
+  if (firstReliability) {
     rows.push({
-      name: "visibility",
-      label: "Visibility Test",
+      name: "reliability",
+      label: "Reliability Test",
       featured: true,
     });
   }
@@ -140,6 +139,7 @@ function renderScenarioButtons() {
     button.disabled = busy;
     button.addEventListener("click", () => {
       selectedScenario = scenario.name;
+      syncSelectedScenarioDuration();
       renderScenarioButtons();
       updateScenarioControls();
       setMessage(`${selectedScenarioLabel()} selected.`, "muted");
@@ -165,9 +165,8 @@ runSelectedScenario.addEventListener("click", async () => {
         action: "run_scenario",
         scenario: scenarioName,
         duration: Number(durationNumber.value),
-        visibility: Number(visibilityNumber.value),
-        workers: Number(workersNumber.value),
-        takeover_enabled: !scenarioSupportsTakeover(selectedScenario) || takeoverEnabled.checked,
+        netem_loss: Number(reliabilityNumber.value),
+        debug_artifacts: Boolean(debugArtifacts?.checked),
       }),
     });
     setMessage(`${label} launched.`, "muted");
@@ -179,11 +178,18 @@ runSelectedScenario.addEventListener("click", async () => {
   }
 });
 
-document.querySelectorAll("input[name='visibilityScenario']").forEach((input) => {
-  input.addEventListener("change", () => updateScenarioControls());
+document.querySelectorAll("input[name='reliabilityScenario']").forEach((input) => {
+  input.addEventListener("change", () => {
+    syncSelectedScenarioDuration();
+    updateScenarioControls();
+  });
 });
 
 downloadLatestRun.addEventListener("click", () => {
+  if (debugArtifacts) {
+    debugArtifacts.checked = false;
+  }
+  setMessage("Packaging retained run artifacts...", "muted");
   window.location.href = "/api/download/latest-run.zip";
 });
 
@@ -204,6 +210,30 @@ function lightClass(running) {
 
 function badge(label, running) {
   return `<span class="badge"><span class="${lightClass(running)}"></span>${label}</span>`;
+}
+
+function formatMetric(value, digits = 2) {
+  if (value === null || value === undefined || value === "") {
+    return "—";
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return "—";
+  }
+  return number.toFixed(digits);
+}
+
+function formatLossLevels(raw) {
+  if (!raw) {
+    return "";
+  }
+  return raw
+    .split(",")
+    .map((item) => Number(item))
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b)
+    .map((value) => `${value}%`)
+    .join(", ");
 }
 
 function renderLabStatus(lab, facts) {
@@ -250,7 +280,7 @@ function renderLabStatus(lab, facts) {
       ${badge(`${(facts.detector_domains || "").split(/\s+/).filter(Boolean).length || 0} domains`, true)}
     </div>
     <div class="row">
-      <div><strong>DHCP Pool</strong><br><span class="muted">free ${pool.free ?? "—"} · taken ${pool.taken ?? "—"} · attack ${pool.attack_taken ?? "—"}</span></div>
+      <div><strong>DHCP Pool</strong><br><span class="muted">free ${pool.free ?? "—"} · taken ${pool.taken ?? "—"}</span></div>
       ${badge(`${pool.pool_total ?? "—"} total`, true)}
     </div>
     ${hostRows}
@@ -295,7 +325,7 @@ function renderJobStatus(jobState) {
 
 function renderLatestResult(latest) {
   const container = document.getElementById("latestResult");
-  downloadLatestRun.disabled = !latest || !latest.path;
+  downloadLatestRun.disabled = !latest || !latest.path || latest.can_download === false;
   if (!latest || !latest.path) {
     container.innerHTML = `<div class="muted">No saved run yet.</div>`;
     return;
@@ -307,12 +337,10 @@ function renderLatestResult(latest) {
   const detectorTypes = Object.entries(latest.detector_attack_type_counts || {}).map(([key, value]) => `${key}=${value}`).join(", ") || "none";
   const zeekTypes = Object.entries(latest.zeek_attack_type_counts || {}).map(([key, value]) => `${key}=${value}`).join(", ") || "none";
   const suricataTypes = Object.entries(latest.suricata_attack_type_counts || {}).map(([key, value]) => `${key}=${value}`).join(", ") || "none";
-  const starvationNote = (latest.scenario || "").includes("starvation")
-    ? `<div class="inline-help">DHCP starvation note: ground truth here counts matched starvation DHCP packets on the wire. Cleanup release packets are excluded.</div>`
-    : "";
   container.innerHTML = `
     <div><strong>${latest.scenario || latest.path}</strong></div>
-    <div class="muted">${latest.summary_path || ""}</div>
+    <div class="muted">${latest.summary_path || latest.path || ""}</div>
+    ${latest.can_download === false ? `<div class="inline-help">Compact DB row only; raw run files were not retained.</div>` : ""}
     <div class="stack compact">
       <div class="row"><span class="muted">Ground truth</span><strong>${latest.ground_truth_attack_events ?? "—"} pkts</strong></div>
       <div class="muted">Types: ${gtTypes}</div>
@@ -323,8 +351,65 @@ function renderLatestResult(latest) {
       <div class="muted">Types: ${zeekTypes}</div>
       <div class="row"><span class="muted">Suricata</span><strong>${latest.suricata_alert_events ?? "—"}</strong></div>
       <div class="muted">Types: ${suricataTypes}</div>
-      ${starvationNote}
     </div>
+  `;
+}
+
+function renderResultsDbSummary(summary) {
+  const container = document.getElementById("resultsDbSummary");
+  const updatedAt = document.getElementById("resultsDbUpdatedAt");
+  if (!summary || !summary.exists) {
+    updatedAt.textContent = "";
+    container.innerHTML = `<div class="muted">No results database yet.</div>`;
+    return;
+  }
+  updatedAt.textContent = summary.latest_started_at || "";
+  const sensors = summary.sensor_totals || {};
+  const sensorRows = ["detector", "zeek", "suricata"].map((name) => {
+    const sensor = sensors[name] || {};
+    return `
+      <div class="mini-metric">
+        <div class="label">${name}</div>
+        <div class="value">${sensor.alerts ?? 0}</div>
+        <div class="muted">ttd ${formatMetric(sensor.avg_ttd_seconds)}s · max ${formatMetric(sensor.max_processed_pps, 1)} pps</div>
+      </div>
+    `;
+  }).join("");
+  const scenarioRows = (summary.scenarios || []).slice(0, 8).map((scenario) => {
+    const losses = formatLossLevels(scenario.reliability_losses);
+    return `
+      <div class="scenario-summary-row">
+        <div>
+          <strong>${scenario.label || scenario.scenario}</strong>
+          <div class="muted">${scenario.latest_started_at || ""}${losses ? ` · loss ${losses}` : ""}</div>
+          <div class="muted">alerts D/Z/S ${scenario.detector_alerts ?? 0}/${scenario.zeek_alerts ?? 0}/${scenario.suricata_alerts ?? 0}</div>
+        </div>
+        <div class="scenario-summary-counts">
+          <strong>${scenario.run_count}</strong>
+          <span class="muted">runs</span>
+          ${scenario.retained_count ? `<span class="badge">${scenario.retained_count} saved</span>` : ""}
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  container.innerHTML = `
+    <div class="tool-counters">
+      <div class="mini-metric">
+        <div class="label">runs</div>
+        <div class="value">${summary.total_runs ?? 0}</div>
+      </div>
+      <div class="mini-metric">
+        <div class="label">saved</div>
+        <div class="value">${summary.retained_runs ?? 0}</div>
+      </div>
+      <div class="mini-metric">
+        <div class="label">pcaps</div>
+        <div class="value">${summary.pcap_runs ?? 0}</div>
+      </div>
+    </div>
+    <div class="sensor-summary-grid">${sensorRows}</div>
+    <div class="db-scenario-list">${scenarioRows || `<div class="muted">No scenario rows yet.</div>`}</div>
   `;
 }
 
@@ -469,6 +554,7 @@ async function refreshStatus() {
   renderLabStatus(payload.lab || {}, payload.lab_facts || {});
   renderJobStatus(payload.job || {});
   renderLatestResult(payload.latest_result || {});
+  renderResultsDbSummary(payload.results_db || {});
   renderGroundTruthCard(payload.latest_result || null);
   renderToolCard("detector", payload.tools.detector);
   renderToolCard("zeek", payload.tools.zeek);
@@ -480,9 +566,8 @@ async function refreshAll() {
   await refreshLogs();
 }
 
-syncDurationInputs(20);
-syncVisibilityInputs(100);
-syncWorkersInputs(1);
+syncDurationInputs(30);
+syncReliabilityInputs(0);
 refreshAll().catch((error) => setMessage(error.message, "danger"));
 setInterval(() => {
   refreshAll().catch((error) => setMessage(error.message, "danger"));

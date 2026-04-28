@@ -20,6 +20,7 @@ from metrics.model import (
     SensorResult,
 )
 from metrics.parsers import (
+    canonical_attack_type,
     canonical_counter_from_records,
     canonical_ground_truth_counts,
     find_attack_stdout_files,
@@ -31,7 +32,6 @@ from metrics.parsers import (
     normalize_timestamp,
     observed_wire_attack_records,
     observed_wire_attack_epochs_by_type,
-    observed_wire_pcap_path,
     observed_wire_source_label,
     observed_wire_attack_type_first_seen_at,
     observed_wire_attack_start_candidates,
@@ -41,10 +41,18 @@ from metrics.parsers import (
     parse_timestamp,
     parse_concatenated_json,
     supported_attack_started_at,
+    untrusted_switch_port_pcap_paths,
 )
-from metrics.run_artifacts import detector_delta_path
-from metrics.run_artifacts import suricata_eve_path, zeek_notice_path
 from metrics.primitives import time_to_detection_seconds
+from metrics.run_artifacts import (
+    detector_delta_path,
+    parse_ovs_dhcp_snooping_stats,
+    suricata_eve_path,
+    suricata_stats_path,
+    zeek_notice_path,
+    zeek_stats_path,
+)
+from metrics.truth_db import truth_db_path
 
 
 def last_timestamp(values: list[str | None]) -> str | None:
@@ -126,8 +134,13 @@ def evaluation_input_paths(run_dir: Path) -> list[Path]:
         run_dir / "pcap" / "sensor.pcap",
         run_dir / "pcap" / "victim.pcap",
         run_dir / "pcap" / "wire-truth.json",
+        truth_db_path(run_dir),
+        run_dir / "detector" / "ovs-dhcp-snooping.txt",
+        run_dir / "detector" / "ovs-switch-truth-snooping.txt",
         zeek_notice_path(run_dir),
+        zeek_stats_path(run_dir),
         suricata_eve_path(run_dir),
+        suricata_stats_path(run_dir),
     ]
     paths.extend(find_attack_stdout_files(run_dir))
     return sorted(path for path in paths if path.exists())
@@ -204,6 +217,7 @@ def load_detector_result(
     records: list[dict[str, Any]],
     attack_started_at: str | None,
     ground_truth_first_seen_at: dict[str, str],
+    coverage: dict[str, bool] | None = None,
 ) -> SensorResult:
     alert_records = [record for record in records if record.get("event") in DETECTOR_ALERT_EVENTS]
     canonical_alert_types, canonical_first_alert_at, raw_counter = canonical_counter_from_records(
@@ -213,8 +227,9 @@ def load_detector_result(
         timestamp_key="ts",
     )
     first_alert_at = first_timestamp(record.get("ts") for record in alert_records if record.get("ts"))
-    coverage = SENSOR_COVERAGE["detector"]
+    coverage = coverage or SENSOR_COVERAGE["detector"]
     supported_started_at = supported_attack_started_at(ground_truth_first_seen_at, coverage)
+    supported_first_alert_at = supported_sensor_first_alert_at(canonical_first_alert_at, ground_truth_first_seen_at, coverage)
     return SensorResult(
         alert_events=len(alert_records),
         alert_types=raw_counter,
@@ -224,8 +239,20 @@ def load_detector_result(
         first_alert_at=first_alert_at,
         ttd_seconds=time_to_detection_seconds(attack_started_at, first_alert_at),
         supported_attack_started_at=supported_started_at,
-        supported_ttd_seconds=time_to_detection_seconds(supported_started_at, first_alert_at),
+        supported_ttd_seconds=time_to_detection_seconds(supported_started_at, supported_first_alert_at),
         coverage=coverage,
+    )
+
+
+def supported_sensor_first_alert_at(
+    canonical_first_alert_at: dict[str, str],
+    ground_truth_first_seen_at: dict[str, str],
+    coverage: dict[str, bool],
+) -> str | None:
+    return first_timestamp(
+        canonical_first_alert_at.get(attack_type)
+        for attack_type in ground_truth_first_seen_at
+        if coverage.get(attack_type, False)
     )
 
 
@@ -244,6 +271,7 @@ def load_zeek_result(
     first_alert_at = first_timestamp(normalize_timestamp(record.get("ts")) for record in records if record.get("note"))
     coverage = SENSOR_COVERAGE["zeek"]
     supported_started_at = supported_attack_started_at(ground_truth_first_seen_at, coverage)
+    supported_first_alert_at = supported_sensor_first_alert_at(canonical_first_alert_at, ground_truth_first_seen_at, coverage)
     return SensorResult(
         alert_events=sum(raw_counter.values()),
         alert_types=raw_counter,
@@ -253,7 +281,7 @@ def load_zeek_result(
         first_alert_at=first_alert_at,
         ttd_seconds=time_to_detection_seconds(attack_started_at, first_alert_at),
         supported_attack_started_at=supported_started_at,
-        supported_ttd_seconds=time_to_detection_seconds(supported_started_at, first_alert_at),
+        supported_ttd_seconds=time_to_detection_seconds(supported_started_at, supported_first_alert_at),
         coverage=coverage,
     )
 
@@ -312,9 +340,10 @@ def load_suricata_result(
     raw_counter = dict(sorted(Counter(record.get("signature", "unknown") for record in alerts if record.get("signature")).items()))
     first_alert_at = first_timestamp(normalize_timestamp(record.get("timestamp")) for record in alerts)
     effective_coverage = dict(coverage)
-    if arp_eve_matches > 0:
+    if "arp_spoof" in ground_truth_first_seen_at or arp_eve_matches > 0:
         effective_coverage["arp_spoof"] = True
     supported_started_at = supported_attack_started_at(ground_truth_first_seen_at, effective_coverage)
+    supported_first_alert_at = supported_sensor_first_alert_at(canonical_first_alert_at, ground_truth_first_seen_at, effective_coverage)
     return SensorResult(
         alert_events=len(alerts),
         alert_types=raw_counter,
@@ -324,7 +353,7 @@ def load_suricata_result(
         first_alert_at=first_alert_at,
         ttd_seconds=time_to_detection_seconds(attack_started_at, first_alert_at),
         supported_attack_started_at=supported_started_at,
-        supported_ttd_seconds=time_to_detection_seconds(supported_started_at, first_alert_at),
+        supported_ttd_seconds=time_to_detection_seconds(supported_started_at, supported_first_alert_at),
         coverage=effective_coverage,
     )
 
@@ -342,7 +371,16 @@ def evaluate_single_run(run_dir: Path) -> RunEvaluation:
         if record.get("event") in GROUND_TRUTH_ATTACK_EVENTS
     ]
     observed_records = observed_wire_attack_records(run_dir, meta)
-    relevant_attack_records = observed_records if observed_records else attacker_action_records
+    observed_counter, _ = canonical_ground_truth_counts(observed_records)
+    if observed_records:
+        observed_types = set(observed_counter)
+        supplemental_action_records = [
+            record for record in attacker_action_records
+            if canonical_attack_type(record.get("event")) not in observed_types
+        ]
+        relevant_attack_records = [*observed_records, *supplemental_action_records]
+    else:
+        relevant_attack_records = attacker_action_records
     control_records = [
         record for record in attack_records
         if record.get("event") not in GROUND_TRUTH_ATTACK_EVENTS
@@ -350,7 +388,6 @@ def evaluate_single_run(run_dir: Path) -> RunEvaluation:
 
     attack_counter, attack_first_seen_at = canonical_ground_truth_counts(relevant_attack_records)
     attacker_stdout_action_counter, _ = canonical_ground_truth_counts(attacker_action_records)
-    observed_counter, _ = canonical_ground_truth_counts(observed_records)
     control_counter = Counter(record.get("event", "unknown") for record in control_records)
     wire_epochs_by_type = observed_wire_attack_epochs_by_type(run_dir, meta, attack_records)
     wire_attack_first_seen_at = observed_wire_attack_type_first_seen_at(run_dir, meta, attack_records)
@@ -379,7 +416,16 @@ def evaluate_single_run(run_dir: Path) -> RunEvaluation:
     wire_truth_label = observed_wire_source_label(run_dir)
 
     if observed_records:
-        ground_truth_source = wire_truth_label or "switch_pcap"
+        dhcp_snooping_stats = parse_ovs_dhcp_snooping_stats(run_dir / "detector" / "ovs-dhcp-snooping.txt")
+        dhcp_snooping_packets = int(dhcp_snooping_stats.get("packets") or 0)
+        if wire_truth_label == "trusted_observation_db":
+            ground_truth_source = "trusted_observation_db"
+        elif wire_epochs_by_type.get("dhcp_untrusted_switch_port") and (untrusted_switch_port_pcap_paths(run_dir) or dhcp_snooping_packets > 0):
+            ground_truth_source = "switch_port_snooping"
+        elif wire_truth_label == "switch_snooping":
+            ground_truth_source = "switch_port_snooping"
+        else:
+            ground_truth_source = wire_truth_label or "wire_truth_summary"
     elif attack_records:
         ground_truth_source = "attacker_stdout"
     elif meta.get("scenario") == "baseline":
@@ -388,7 +434,10 @@ def evaluate_single_run(run_dir: Path) -> RunEvaluation:
         ground_truth_source = "scenario_inferred"
     attack_present = bool(relevant_attack_records) or meta.get("scenario") != "baseline"
 
-    detector_result = load_detector_result(detector_records, attack_started_at, attack_first_seen_at)
+    detector_coverage = dict(SENSOR_COVERAGE["detector"])
+    if not bool(meta.get("detector_ovs_dhcp_snooping_enabled", True)):
+        detector_coverage["dhcp_untrusted_switch_port"] = False
+    detector_result = load_detector_result(detector_records, attack_started_at, attack_first_seen_at, detector_coverage)
     zeek_result = load_zeek_result(run_dir, attack_started_at, attack_first_seen_at)
     suricata_coverage = dict(SENSOR_COVERAGE["suricata"])
     suricata_coverage["arp_spoof"] = bool(meta.get("suricata_arp_rule_enabled", False))

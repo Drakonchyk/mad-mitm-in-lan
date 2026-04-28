@@ -16,6 +16,92 @@ vm_interface_target_by_mac() {
       '
 }
 
+ovs_ofport() {
+  local port="$1"
+  run_root ovs-vsctl get Interface "${port}" ofport 2>/dev/null | tr -d '[:space:]'
+}
+
+refresh_dhcp_snooping_flows() {
+  local bridge="$1"
+  local victim_port="$2"
+  local attacker_port="$3"
+  local sensor_port="$4"
+  local gateway_port="$5"
+  local cookie="0x4d49544d"
+  local mode action port ofport
+
+  if ! command -v ovs-ofctl >/dev/null 2>&1; then
+    warn "ovs-ofctl is missing; cannot refresh DHCP snooping flows"
+    return 0
+  fi
+
+  run_root ovs-ofctl del-flows "${bridge}" "cookie=${cookie}/-1" >/dev/null 2>&1 || true
+  mode="$(dhcp_snooping_mode)"
+  run_root ovs-vsctl set Bridge "${bridge}" \
+    external_ids:dhcp_snooping_mode="${mode}" \
+    external_ids:dhcp_trusted_server_port="${gateway_port}" \
+    external_ids:dhcp_trusted_server_mac="${GATEWAY_LAB_MAC,,}" \
+    external_ids:dhcp_trusted_server_ip="${GATEWAY_IP}"
+
+  if [[ "${mode}" == "off" ]]; then
+    info "OVS DHCP snooping monitor is off"
+    return 0
+  fi
+
+  if [[ "${mode}" == "enforce" ]]; then
+    action="drop"
+    info "Installing OVS DHCP snooping flows in enforce mode: only the gateway port is DHCP-server trusted"
+  else
+    action="NORMAL"
+    info "Installing OVS DHCP snooping flows in monitor mode: non-gateway DHCP server replies are counted and forwarded"
+  fi
+
+  for port in "${victim_port}" "${attacker_port}"; do
+    ofport="$(ovs_ofport "${port}")"
+    if [[ -z "${ofport}" || "${ofport}" == "-1" ]]; then
+      warn "Could not resolve ofport for ${port}; skipping DHCP snooping flow"
+      continue
+    fi
+    run_root ovs-ofctl add-flow "${bridge}" \
+      "cookie=${cookie},priority=300,in_port=${ofport},udp,tp_src=67,tp_dst=68,actions=${action}"
+  done
+  run_root ovs-ofctl add-flow "${bridge}" "cookie=${cookie},priority=0,actions=NORMAL"
+}
+
+refresh_switch_truth_snooping_flows() {
+  local bridge="$1"
+  local victim_port="$2"
+  local attacker_port="$3"
+  local sensor_port="$4"
+  local cookie="0x4d49544e"
+  local port ofport
+
+  if ! command -v ovs-ofctl >/dev/null 2>&1; then
+    warn "ovs-ofctl is missing; cannot refresh switch truth snooping flows"
+    return 0
+  fi
+
+  run_root ovs-ofctl del-flows "${bridge}" "cookie=${cookie}/-1" >/dev/null 2>&1 || true
+  if [[ "${LAB_SWITCH_TRUTH_SNOOPING:-1}" != "1" ]]; then
+    info "OVS switch truth snooping is off"
+    return 0
+  fi
+
+  info "Installing OVS switch truth snooping flows for ARP and DNS trust violations"
+  for port in "${victim_port}" "${attacker_port}"; do
+    ofport="$(ovs_ofport "${port}")"
+    if [[ -z "${ofport}" || "${ofport}" == "-1" ]]; then
+      warn "Could not resolve ofport for ${port}; skipping switch truth snooping flows"
+      continue
+    fi
+    run_root ovs-ofctl add-flow "${bridge}" \
+      "cookie=${cookie},priority=290,in_port=${ofport},arp,arp_op=2,arp_spa=${GATEWAY_IP},actions=NORMAL"
+    run_root ovs-ofctl add-flow "${bridge}" \
+      "cookie=${cookie},priority=290,in_port=${ofport},udp,nw_src=${DNS_SERVER},tp_src=53,actions=NORMAL"
+  done
+  run_root ovs-ofctl add-flow "${bridge}" "cookie=${cookie},priority=0,actions=NORMAL"
+}
+
 refresh_lab_switch_mirror() {
   local bridge="${LAB_SWITCH_BRIDGE}"
   local sensor_port="${LAB_SWITCH_SENSOR_PORT}"
@@ -50,6 +136,8 @@ refresh_lab_switch_mirror() {
       select-dst-port=@gw,@victim,@attacker \
       output-port=@sensor \
     -- set Bridge "${bridge}" mirrors=@mirror
+	  refresh_dhcp_snooping_flows "${bridge}" "${victim_port}" "${attacker_port}" "${sensor_port}" "${gateway_port}"
+  refresh_switch_truth_snooping_flows "${bridge}" "${victim_port}" "${attacker_port}" "${sensor_port}"
 }
 
 for vm in "${GATEWAY_NAME}" "${VICTIM_NAME}" "${ATTACKER_NAME}"; do

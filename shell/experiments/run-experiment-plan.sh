@@ -3,6 +3,7 @@ set -euo pipefail
 
 USER_PCAP_RETENTION_POLICY="${PCAP_RETENTION_POLICY-}"
 USER_PCAP_ENABLE="${PCAP_ENABLE-}"
+USER_PORT_PCAP_ENABLE="${PORT_PCAP_ENABLE-}"
 USER_GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE-}"
 USER_PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE-}"
 
@@ -11,16 +12,23 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../experiment-common.sh"
 
 EXPERIMENT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-WARMUP_RUNS="${WARMUP_RUNS:-1}"
-MEASURED_RUNS="${MEASURED_RUNS:-10}"
-PLAN_SCENARIOS="${PLAN_SCENARIOS:-baseline arp-poison-no-forward arp-mitm-forward arp-mitm-dns dhcp-spoof dhcp-starvation mitigation-recovery}"
-DHCP_STARVATION_WORKERS="${DHCP_STARVATION_WORKERS:-1}"
-PCAP_RETENTION_POLICY="${USER_PCAP_RETENTION_POLICY:-none}"
-PCAP_ENABLE="${USER_PCAP_ENABLE:-1}"
+WARMUP_RUNS="${WARMUP_RUNS:-0}"
+MEASURED_RUNS="${MEASURED_RUNS:-${RUNS:-1}}"
+PLAN_SCENARIOS="${PLAN_SCENARIOS:-arp-poison-no-forward arp-mitm-forward arp-mitm-dns dhcp-spoof}"
+PCAP_ENABLE="${USER_PCAP_ENABLE:-0}"
+PORT_PCAP_ENABLE="${USER_PORT_PCAP_ENABLE:-0}"
+if [[ -n "${USER_PCAP_RETENTION_POLICY}" ]]; then
+  PCAP_RETENTION_POLICY="${USER_PCAP_RETENTION_POLICY}"
+elif [[ "${PCAP_ENABLE}" == "1" ]]; then
+  PCAP_RETENTION_POLICY="all"
+else
+  PCAP_RETENTION_POLICY="none"
+fi
 GUEST_PCAP_ENABLE="${USER_GUEST_PCAP_ENABLE:-0}"
 PCAP_SUMMARIES_ENABLE="${USER_PCAP_SUMMARIES_ENABLE:-0}"
 IPERF_ENABLE="${IPERF_ENABLE:-0}"
 POST_ATTACK_SETTLE_SECONDS="${POST_ATTACK_SETTLE_SECONDS:-0}"
+DETECTOR_HEARTBEAT_SECONDS="${DETECTOR_HEARTBEAT_SECONDS:-2}"
 REMOTE_ROOT="$(research_workspace_root)"
 PLAN_SKIP_RUNS=0
 PLAN_START_RUN=1
@@ -36,6 +44,8 @@ Options:
   --start N                 Start from the Nth planned run window (1-based)
   --start-scenario NAME     Start when NAME is reached in PLAN_SCENARIOS
   --skip-scenario NAME      Exclude NAME from the planned scenarios (repeatable)
+  --runs N                  Measured runs per scenario (default: 1)
+  --warmups N               Warmup runs per scenario (default: 0)
   --help                    Show this help text
 EOF
 }
@@ -58,6 +68,14 @@ while [[ $# -gt 0 ]]; do
       PLAN_SKIP_SCENARIOS+=("${2:?missing value for --skip-scenario}")
       shift 2
       ;;
+    --runs|--measured-runs)
+      MEASURED_RUNS="${2:?missing value for --runs}"
+      shift 2
+      ;;
+    --warmups|--warmup-runs)
+      WARMUP_RUNS="${2:?missing value for --warmups}"
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -70,8 +88,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if ! [[ "${PLAN_SKIP_RUNS}" =~ ^[0-9]+$ ]] || ! [[ "${PLAN_START_RUN}" =~ ^[0-9]+$ ]] || (( PLAN_START_RUN < 1 )); then
-  warn "--skip must be >= 0 and --start must be >= 1"
+if ! [[ "${PLAN_SKIP_RUNS}" =~ ^[0-9]+$ ]] \
+  || ! [[ "${PLAN_START_RUN}" =~ ^[0-9]+$ ]] \
+  || ! [[ "${WARMUP_RUNS}" =~ ^[0-9]+$ ]] \
+  || ! [[ "${MEASURED_RUNS}" =~ ^[0-9]+$ ]] \
+  || (( PLAN_START_RUN < 1 )) \
+  || (( MEASURED_RUNS < 1 )); then
+  warn "--skip and --warmups must be >= 0; --start and --runs must be >= 1"
   exit 1
 fi
 
@@ -102,10 +125,6 @@ run_window() {
   local post_cleanup_use_sudo="${17:-0}"
   local run_slug_suffix=""
 
-  if [[ "${scenario}" == dhcp-starvation* ]]; then
-    run_slug_suffix="param-workers-${DHCP_STARVATION_WORKERS}"
-  fi
-
   info "Planned run: scenario=${scenario} run_index=${run_index} warmup=${warmup}"
   SKIP_LAB_START="1" \
   ATTACK_JOB_HOST="${ATTACK_JOB_HOST_OVERRIDE:-attacker}" \
@@ -130,13 +149,14 @@ run_window() {
   PLAN_DNS_SPOOF_ENABLED="${dns_spoof_enabled}" \
   PLAN_SPOOFED_DOMAINS="${spoofed_domains}" \
   RUN_SLUG_SUFFIX="${run_slug_suffix}" \
-  DHCP_STARVATION_WORKERS="${DHCP_STARVATION_WORKERS}" \
   PCAP_ENABLE="${PCAP_ENABLE}" \
+  PORT_PCAP_ENABLE="${PORT_PCAP_ENABLE}" \
   GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE}" \
   PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE}" \
   PCAP_RETENTION_POLICY="${PCAP_RETENTION_POLICY}" \
   IPERF_ENABLE="${IPERF_ENABLE}" \
   POST_ATTACK_SETTLE_SECONDS="${POST_ATTACK_SETTLE_SECONDS}" \
+  DETECTOR_HEARTBEAT_SECONDS="${DETECTOR_HEARTBEAT_SECONDS}" \
     "${EXPERIMENT_SCRIPT_DIR}/run-scenario-window.sh" "${scenario}" "${duration}" "${note}"
 }
 
@@ -149,7 +169,7 @@ run_scenario() {
     baseline)
       run_window \
         "baseline" \
-        "90" \
+        "20" \
         "Planned baseline run for the diploma experiment set" \
         "${run_index}" \
         "${warmup}" \
@@ -165,124 +185,82 @@ run_scenario() {
     arp-poison-no-forward)
       run_window \
         "arp-poison-no-forward" \
-        "90" \
+        "30" \
         "Planned ARP poisoning without forwarding" \
         "${run_index}" \
         "${warmup}" \
-        "10" \
-        "70" \
+        "5" \
+        "25" \
         "" \
         "0" \
         "0" \
         "" \
-        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 60 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf arp-poison --interface vnic0" \
+        "sleep 5; cd '${REMOTE_ROOT}' && exec timeout -s INT 20 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf arp-poison --interface vnic0" \
         ""
       ;;
     arp-mitm-forward)
       run_window \
         "arp-mitm-forward" \
-        "90" \
+        "30" \
         "Planned ARP MITM with forwarding enabled" \
         "${run_index}" \
         "${warmup}" \
-        "10" \
-        "70" \
+        "5" \
+        "25" \
         "" \
         "1" \
         "0" \
         "" \
-        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 60 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf arp-poison --interface vnic0 --enable-forwarding" \
+        "sleep 5; cd '${REMOTE_ROOT}' && exec timeout -s INT 20 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf arp-poison --interface vnic0 --enable-forwarding" \
         ""
       ;;
     arp-mitm-dns)
       run_window \
         "arp-mitm-dns" \
-        "90" \
+        "45" \
         "Planned ARP MITM with forwarding plus focused DNS spoofing for iana.org" \
         "${run_index}" \
         "${warmup}" \
-        "10" \
-        "70" \
+        "5" \
+        "35" \
         "" \
         "1" \
         "1" \
         "iana.org" \
-        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 60 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --enable-forwarding --domains iana.org" \
+        "sleep 5; cd '${REMOTE_ROOT}' && exec timeout -s INT 30 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --enable-forwarding --domains iana.org" \
         ""
       ;;
     dhcp-spoof)
       run_window \
         "dhcp-spoof" \
-        "60" \
+        "30" \
         "Planned rogue DHCP offer and ACK broadcast run" \
         "${run_index}" \
         "${warmup}" \
-        "10" \
-        "50" \
+        "5" \
+        "25" \
         "" \
         "0" \
         "0" \
         "" \
-        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 40 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf dhcp-spoof --interface vnic0 --interval 2.0" \
+        "sleep 5; cd '${REMOTE_ROOT}' && exec timeout -s INT 20 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf dhcp-spoof --interface vnic0 --interval 1.0" \
         ""
-      ;;
-    dhcp-starvation)
-      run_window \
-        "dhcp-starvation" \
-        "60" \
-        "Planned DHCP starvation run with spoofed client identities and gateway cleanup" \
-        "${run_index}" \
-        "${warmup}" \
-        "10" \
-        "50" \
-        "" \
-        "0" \
-        "0" \
-        "" \
-        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 40 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf dhcp-starvation --interface vnic0 --interval 0.2 --request-timeout 5.0 --workers ${DHCP_STARVATION_WORKERS}" \
-        "" \
-        "gateway" \
-        "dhcp-starvation-cleanup" \
-        "python3 - '${DHCP_STARVATION_MAC_PREFIX,,}' <<'PY'
-from pathlib import Path
-import sys
-prefix = sys.argv[1].lower()
-changed = False
-for candidate in (Path('/var/lib/misc/dnsmasq.leases'), Path('/var/lib/dhcp/dnsmasq.leases')):
-    if not candidate.exists():
-        continue
-    kept = []
-    for raw_line in candidate.read_text(encoding='utf-8', errors='replace').splitlines():
-        parts = raw_line.split()
-        if len(parts) >= 2 and parts[1].lower().startswith(prefix):
-            changed = True
-            continue
-        kept.append(raw_line)
-    if changed:
-        candidate.write_text(('\\n'.join(kept) + '\\n') if kept else '', encoding='utf-8')
-if changed:
-    print(f'purged DHCP starvation leases for prefix {prefix}')
-else:
-    print(f'no DHCP starvation leases found for prefix {prefix}')
-PY
-systemctl restart dnsmasq" \
-        "1"
       ;;
     mitigation-recovery)
       run_window \
         "mitigation-recovery" \
-        "120" \
+        "60" \
         "Planned mitigation and recovery run with ARP MITM plus DNS spoofing followed by victim-side restoration" \
         "${run_index}" \
         "${warmup}" \
-        "10" \
-        "45" \
-        "45" \
+        "5" \
+        "30" \
+        "30" \
         "1" \
         "1" \
         "iana.org" \
-        "sleep 10; cd '${REMOTE_ROOT}' && exec timeout -s INT 35 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --enable-forwarding --domains iana.org" \
-        "sleep 45; ip neigh replace '${GATEWAY_IP}' lladdr '${GATEWAY_LAB_MAC}' nud permanent dev vnic0"
+        "sleep 5; cd '${REMOTE_ROOT}' && exec timeout -s INT 25 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --enable-forwarding --domains iana.org" \
+        "sleep 30; ip neigh replace '${GATEWAY_IP}' lladdr '${GATEWAY_LAB_MAC}' nud permanent dev vnic0"
       ;;
     *)
       warn "Unknown planned scenario: ${scenario}"

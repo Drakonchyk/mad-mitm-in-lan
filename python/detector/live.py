@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import re
@@ -10,8 +11,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from ipaddress import ip_address, ip_network
 from pathlib import Path
+from threading import Lock
+from typing import TextIO
 
-from scapy.all import ARP, BOOTP, DHCP, DNS, DNSQR, DNSRR, Ether, ICMP, IP, UDP, PcapReader, sniff
+from scapy.all import ARP, BOOTP, DHCP, DNS, DNSQR, DNSRR, Ether, ICMP, IP, UDP, AsyncSniffer, PcapReader
 
 GATEWAY_IP = "__GATEWAY_IP__"
 DNS_SERVER = "__DNS_SERVER__"
@@ -31,6 +34,9 @@ KNOWN_ATTACKER_MAC_RAW = os.getenv("MITM_LAB_ATTACKER_MAC")
 SNIFF_TIMEOUT_SECONDS = 1
 SNIFF_FILTER = "arp or (udp and port 53) or icmp or (udp and (port 67 or port 68))"
 MAC_RE = re.compile(r"lladdr\s+([0-9a-f:]{17})", re.I)
+OVS_FLOW_PACKETS_RE = re.compile(r"\bn_packets=(\d+)")
+OVS_FLOW_BYTES_RE = re.compile(r"\bn_bytes=(\d+)")
+OVS_FLOW_IN_PORT_RE = re.compile(r"\bin_port=([^, ]+)")
 
 
 def now() -> str:
@@ -45,6 +51,13 @@ def getenv_float(name: str, default: float) -> float:
         return float(value)
     except ValueError:
         return default
+
+
+def getenv_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def run(cmd):
@@ -77,15 +90,17 @@ def getenv_ip(name: str, default: str) -> str | None:
 MONITORED_DOMAINS = {normalize_domain(item) for item in DOMAINS}
 HEARTBEAT_SECONDS = getenv_float("MITM_LAB_HEARTBEAT_SECONDS", 10.0)
 PACKET_SAMPLE_RATE = max(0.0, min(1.0, getenv_float("MITM_LAB_PACKET_SAMPLE_RATE", 1.0)))
+VERBOSE_DHCP_PACKET_EVENTS = getenv_bool("MITM_LAB_VERBOSE_DHCP_PACKET_EVENTS", False)
 EXPECTED_DHCP_SERVER_MAC = normalize_mac(EXPECTED_DHCP_SERVER_MAC_RAW)
 KNOWN_VICTIM_MAC = normalize_mac(KNOWN_VICTIM_MAC_RAW)
 KNOWN_ATTACKER_MAC = normalize_mac(KNOWN_ATTACKER_MAC_RAW)
-DHCP_STARVATION_MAC_PREFIX = normalize_mac(os.getenv("MITM_LAB_DHCP_STARVATION_MAC_PREFIX", "02:aa:20"))
-DHCP_STARVATION_WINDOW_SECONDS = max(getenv_float("MITM_LAB_DHCP_STARVATION_WINDOW_SECONDS", 15.0), 1.0)
-DHCP_STARVATION_UNIQUE_CLIENT_THRESHOLD = max(int(getenv_float("MITM_LAB_DHCP_STARVATION_UNIQUE_CLIENT_THRESHOLD", 5.0)), 2)
 INITIAL_VICTIM_IP = getenv_ip("MITM_LAB_VICTIM_IP", VICTIM_IP)
 INITIAL_ATTACKER_IP = getenv_ip("MITM_LAB_ATTACKER_IP", ATTACKER_IP)
+OVS_DHCP_SNOOPING_BRIDGE = os.getenv("MITM_LAB_OVS_DHCP_SNOOPING_BRIDGE", "")
+OVS_DHCP_SNOOPING_MODE = os.getenv("MITM_LAB_OVS_DHCP_SNOOPING_MODE", "off")
+OVS_DHCP_SNOOPING_POLL_SECONDS = getenv_float("MITM_LAB_OVS_DHCP_SNOOPING_POLL_SECONDS", 2.0)
 EVENT_TS_OVERRIDE: str | None = None
+LOG_HANDLE: TextIO | None = None
 
 
 def get_gateway_mac_from_neighbor_cache() -> str | None:
@@ -189,12 +204,6 @@ def dhcp_client_identity(packet) -> dict[str, str | None]:
     }
 
 
-def mac_matches_prefix(value: str | None, prefix: str | None) -> bool:
-    if not value or not prefix:
-        return False
-    return normalize_mac(value).startswith(normalize_mac(prefix))
-
-
 def load_state() -> dict:
     if not STATE_PATH.exists():
         return {"domain_baselines": {}, "seen_gateway_macs": [], "seen_dhcp_servers": []}
@@ -245,11 +254,27 @@ def save_state(state) -> None:
     STATE_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def event_log_handle() -> TextIO:
+    global LOG_HANDLE
+    if LOG_HANDLE is None or LOG_HANDLE.closed:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LOG_HANDLE = LOG_PATH.open("a", encoding="utf-8", buffering=1)
+    return LOG_HANDLE
+
+
+def close_event_log() -> None:
+    global LOG_HANDLE
+    if LOG_HANDLE is not None and not LOG_HANDLE.closed:
+        LOG_HANDLE.close()
+    LOG_HANDLE = None
+
+
+atexit.register(close_event_log)
+
+
 def log_event(event_type: str, **payload) -> None:
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     record = {"ts": EVENT_TS_OVERRIDE or now(), "event": event_type, **payload}
-    with LOG_PATH.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, sort_keys=True) + "\n")
+    event_log_handle().write(json.dumps(record, sort_keys=True) + "\n")
 
 
 @dataclass
@@ -275,10 +300,17 @@ class DetectorState:
     dhcp_offer_packets_seen: int = 0
     dhcp_ack_packets_seen: int = 0
     rogue_dhcp_packets_seen: int = 0
-    dhcp_starvation_packets_seen: int = 0
-    dhcp_starvation_active: bool = False
-    recent_dhcp_request_clients: dict[str, float] = field(default_factory=dict)
+    ovs_dhcp_snooping_packets_seen: int = 0
+    ovs_dhcp_snooping_flow_packets: dict[str, int] = field(default_factory=dict)
     packet_sequence: int = 0
+    packets_processed: int = 0
+    packets_sampled_out: int = 0
+    processing_seconds_total: float = 0.0
+    processing_seconds_max: float = 0.0
+    started_monotonic: float = field(default_factory=time.monotonic)
+    last_heartbeat_monotonic: float = field(default_factory=time.monotonic)
+    last_heartbeat_packet_sequence: int = 0
+    last_heartbeat_packets_processed: int = 0
     dirty: bool = False
 
 
@@ -308,71 +340,6 @@ def ensure_gateway_baseline(state: DetectorState) -> None:
     if state.expected_gateway_mac:
         log_event("gateway_baseline_set", expected_gateway_mac=state.expected_gateway_mac)
         state.dirty = True
-
-
-def prune_recent_dhcp_request_clients(state: DetectorState, now_monotonic: float) -> None:
-    expired = [
-        client_mac
-        for client_mac, seen_at in state.recent_dhcp_request_clients.items()
-        if now_monotonic - seen_at > DHCP_STARVATION_WINDOW_SECONDS
-    ]
-    for client_mac in expired:
-        state.recent_dhcp_request_clients.pop(client_mac, None)
-    if state.dhcp_starvation_active and len(state.recent_dhcp_request_clients) < DHCP_STARVATION_UNIQUE_CLIENT_THRESHOLD:
-        log_event(
-            "dhcp_starvation_cleared",
-            unique_client_count=len(state.recent_dhcp_request_clients),
-            window_seconds=DHCP_STARVATION_WINDOW_SECONDS,
-        )
-        state.dhcp_starvation_active = False
-
-
-def handle_dhcp_snooping(packet, state: DetectorState, message_type: str) -> None:
-    if message_type not in {"discover", "request"}:
-        return
-    client = dhcp_client_identity(packet)
-    client_mac = client["client_mac"]
-    if not client_mac:
-        return
-    if client_mac in {KNOWN_VICTIM_MAC, KNOWN_ATTACKER_MAC}:
-        return
-
-    now_monotonic = time.monotonic()
-    prune_recent_dhcp_request_clients(state, now_monotonic)
-    state.recent_dhcp_request_clients[client_mac] = now_monotonic
-
-    unique_client_count = len(state.recent_dhcp_request_clients)
-    suspicious_packet = (
-        mac_matches_prefix(client_mac, DHCP_STARVATION_MAC_PREFIX)
-        or unique_client_count >= DHCP_STARVATION_UNIQUE_CLIENT_THRESHOLD
-    )
-    if not suspicious_packet:
-        return
-
-    state.dhcp_starvation_packets_seen += 1
-    log_event(
-        "dhcp_starvation_packet_seen",
-        message_type=message_type,
-        client_mac=client_mac,
-        unique_client_count=unique_client_count,
-        window_seconds=DHCP_STARVATION_WINDOW_SECONDS,
-        mac_prefix=DHCP_STARVATION_MAC_PREFIX,
-        count=state.dhcp_starvation_packets_seen,
-    )
-    if (
-        unique_client_count >= DHCP_STARVATION_UNIQUE_CLIENT_THRESHOLD
-        and not state.dhcp_starvation_active
-    ):
-        log_event(
-            "dhcp_starvation_seen",
-            message_type=message_type,
-            client_mac=client_mac,
-            unique_client_count=unique_client_count,
-            window_seconds=DHCP_STARVATION_WINDOW_SECONDS,
-            mac_prefix=DHCP_STARVATION_MAC_PREFIX,
-        )
-        state.dhcp_starvation_active = True
-    state.dirty = True
 
 
 def handle_gateway_arp(packet, state: DetectorState) -> None:
@@ -530,9 +497,6 @@ def handle_dhcp(packet, state: DetectorState) -> None:
         return
 
     message_type = dhcp_message_type(packet)
-    if message_type in {"discover", "request"}:
-        handle_dhcp_snooping(packet, state, message_type)
-        return
     if message_type not in {"offer", "ack"}:
         return
 
@@ -554,17 +518,18 @@ def handle_dhcp(packet, state: DetectorState) -> None:
         state.dhcp_ack_packets_seen += 1
         count = state.dhcp_ack_packets_seen
 
-    log_event(
-        event_name,
-        dhcp_server=server_ip,
-        dhcp_server_mac=server_mac,
-        expected_dhcp_server=EXPECTED_DHCP_SERVER,
-        expected_dhcp_server_mac=EXPECTED_DHCP_SERVER_MAC,
-        client_ip=client_ip,
-        assigned_ip=assigned_ip,
-        client_mac=client_mac,
-        count=count,
-    )
+    if VERBOSE_DHCP_PACKET_EVENTS:
+        log_event(
+            event_name,
+            dhcp_server=server_ip,
+            dhcp_server_mac=server_mac,
+            expected_dhcp_server=EXPECTED_DHCP_SERVER,
+            expected_dhcp_server_mac=EXPECTED_DHCP_SERVER_MAC,
+            client_ip=client_ip,
+            assigned_ip=assigned_ip,
+            client_mac=client_mac,
+            count=count,
+        )
 
     trusted_server = (
         bool(server_ip)
@@ -650,7 +615,16 @@ def handle_dhcp(packet, state: DetectorState) -> None:
 
 
 def log_heartbeat(state: DetectorState) -> None:
-    prune_recent_dhcp_request_clients(state, time.monotonic())
+    now_monotonic = time.monotonic()
+    interval_seconds = max(now_monotonic - state.last_heartbeat_monotonic, 0.001)
+    uptime_seconds = max(now_monotonic - state.started_monotonic, 0.001)
+    interval_packets_seen = state.packet_sequence - state.last_heartbeat_packet_sequence
+    interval_packets_processed = state.packets_processed - state.last_heartbeat_packets_processed
+    avg_processing_ms = (
+        (state.processing_seconds_total / state.packets_processed) * 1000.0
+        if state.packets_processed
+        else 0.0
+    )
     log_event(
         "heartbeat",
         expected_gateway_mac=state.expected_gateway_mac,
@@ -670,36 +644,126 @@ def log_heartbeat(state: DetectorState) -> None:
         dhcp_offer_packets_seen=state.dhcp_offer_packets_seen,
         dhcp_ack_packets_seen=state.dhcp_ack_packets_seen,
         rogue_dhcp_packets_seen=state.rogue_dhcp_packets_seen,
-        dhcp_starvation_packets_seen=state.dhcp_starvation_packets_seen,
-        dhcp_starvation_active=state.dhcp_starvation_active,
-        dhcp_starvation_unique_clients=len(state.recent_dhcp_request_clients),
-        dhcp_starvation_mac_prefix=DHCP_STARVATION_MAC_PREFIX,
+        ovs_dhcp_snooping_mode=OVS_DHCP_SNOOPING_MODE,
+        ovs_dhcp_snooping_packets_seen=state.ovs_dhcp_snooping_packets_seen,
         packet_sample_rate=PACKET_SAMPLE_RATE,
+        packets_seen=state.packet_sequence,
+        packets_processed=state.packets_processed,
+        packets_sampled_out=state.packets_sampled_out,
+        uptime_seconds=uptime_seconds,
+        interval_seconds=interval_seconds,
+        interval_packets_seen=interval_packets_seen,
+        interval_packets_processed=interval_packets_processed,
+        interval_seen_pps=interval_packets_seen / interval_seconds,
+        interval_processed_pps=interval_packets_processed / interval_seconds,
+        lifetime_seen_pps=state.packet_sequence / uptime_seconds,
+        lifetime_processed_pps=state.packets_processed / uptime_seconds,
+        avg_processing_ms=avg_processing_ms,
+        max_processing_ms=state.processing_seconds_max * 1000.0,
         domain_mismatch_active={
             domain: state.domain_mismatch_active.get(domain, False)
             for domain in sorted(state.domain_mismatch_active)
         },
     )
+    state.last_heartbeat_monotonic = now_monotonic
+    state.last_heartbeat_packet_sequence = state.packet_sequence
+    state.last_heartbeat_packets_processed = state.packets_processed
 
 
-def should_process_packet(state: DetectorState) -> bool:
+def ovs_dhcp_snooping_enabled() -> bool:
+    return bool(OVS_DHCP_SNOOPING_BRIDGE) and OVS_DHCP_SNOOPING_MODE.lower() not in {
+        "off",
+        "disable",
+        "disabled",
+        "0",
+        "false",
+        "no",
+    }
+
+
+def parse_ovs_dhcp_snooping_flows(text: str) -> list[dict[str, object]]:
+    flows: list[dict[str, object]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if "priority=300" not in line or "tp_src=67" not in line or "tp_dst=68" not in line:
+            continue
+        packet_match = OVS_FLOW_PACKETS_RE.search(line)
+        byte_match = OVS_FLOW_BYTES_RE.search(line)
+        in_port_match = OVS_FLOW_IN_PORT_RE.search(line)
+        action = line.split("actions=", 1)[1].strip() if "actions=" in line else "unknown"
+        flows.append(
+            {
+                "in_port": in_port_match.group(1) if in_port_match else "unknown",
+                "packets": int(packet_match.group(1)) if packet_match else 0,
+                "bytes": int(byte_match.group(1)) if byte_match else 0,
+                "action": action,
+            }
+        )
+    return flows
+
+
+def poll_ovs_dhcp_snooping(state: DetectorState) -> None:
+    if not ovs_dhcp_snooping_enabled():
+        return
+
+    result = run(["ovs-ofctl", "dump-flows", OVS_DHCP_SNOOPING_BRIDGE, "cookie=0x4d49544d/-1"])
+    if result.returncode != 0:
+        return
+
+    for flow in parse_ovs_dhcp_snooping_flows(result.stdout):
+        in_port = str(flow["in_port"])
+        packets = int(flow["packets"])
+        previous_packets = state.ovs_dhcp_snooping_flow_packets.get(in_port, 0)
+        if packets <= previous_packets:
+            state.ovs_dhcp_snooping_flow_packets[in_port] = packets
+            continue
+
+        delta = packets - previous_packets
+        state.ovs_dhcp_snooping_packets_seen += delta
+        state.ovs_dhcp_snooping_flow_packets[in_port] = packets
+        log_event(
+            "dhcp_reply_from_untrusted_switch_port_seen",
+            bridge=OVS_DHCP_SNOOPING_BRIDGE,
+            mode=OVS_DHCP_SNOOPING_MODE,
+            in_port=in_port,
+            action=str(flow["action"]),
+            packet_delta=delta,
+            packets=packets,
+            byte_count=int(flow["bytes"]),
+            total_count=state.ovs_dhcp_snooping_packets_seen,
+        )
+        state.dirty = True
+
+
+def should_process_packet_after_counting(state: DetectorState) -> bool:
     state.packet_sequence += 1
     if PACKET_SAMPLE_RATE >= 1.0:
         return True
     if PACKET_SAMPLE_RATE <= 0.0:
+        state.packets_sampled_out += 1
         return False
 
     keep_every = max(int(round(1.0 / PACKET_SAMPLE_RATE)), 1)
-    return state.packet_sequence % keep_every == 1
+    should_process = state.packet_sequence % keep_every == 1
+    if not should_process:
+        state.packets_sampled_out += 1
+    return should_process
 
 
 def process_packet(packet, state: DetectorState) -> None:
-    if not should_process_packet(state):
+    started = time.perf_counter()
+    if not should_process_packet_after_counting(state):
         return
-    handle_gateway_arp(packet, state)
-    handle_icmp_redirect(packet, state)
-    handle_dns_response(packet, state)
-    handle_dhcp(packet, state)
+    try:
+        handle_gateway_arp(packet, state)
+        handle_icmp_redirect(packet, state)
+        handle_dns_response(packet, state)
+        handle_dhcp(packet, state)
+    finally:
+        elapsed = time.perf_counter() - started
+        state.packets_processed += 1
+        state.processing_seconds_total += elapsed
+        state.processing_seconds_max = max(state.processing_seconds_max, elapsed)
 
 
 def packet_timestamp(packet) -> str | None:
@@ -743,6 +807,7 @@ def main() -> None:
         sniff_filter=SNIFF_FILTER,
         heartbeat_seconds=HEARTBEAT_SECONDS,
         packet_sample_rate=PACKET_SAMPLE_RATE,
+        verbose_dhcp_packet_events=VERBOSE_DHCP_PACKET_EVENTS,
         gateway_ip=GATEWAY_IP,
         dns_server=DNS_SERVER,
         expected_dhcp_server=EXPECTED_DHCP_SERVER,
@@ -754,6 +819,9 @@ def main() -> None:
         domains=sorted(MONITORED_DOMAINS),
         expected_gateway_mac=state.expected_gateway_mac,
         expected_dhcp_server_mac=EXPECTED_DHCP_SERVER_MAC,
+        ovs_dhcp_snooping_bridge=OVS_DHCP_SNOOPING_BRIDGE,
+        ovs_dhcp_snooping_mode=OVS_DHCP_SNOOPING_MODE,
+        ovs_dhcp_snooping_poll_seconds=OVS_DHCP_SNOOPING_POLL_SECONDS,
         known_victim_ip=state.known_victim_ip,
         known_attacker_ip=state.known_attacker_ip,
         domain_baselines=state.domain_baselines,
@@ -764,24 +832,40 @@ def main() -> None:
         return
 
     next_heartbeat = time.monotonic() + HEARTBEAT_SECONDS
+    next_ovs_dhcp_poll = time.monotonic()
+    state_lock = Lock()
 
-    while True:
-        sniff(
-            iface=INTERFACE,
-            filter=SNIFF_FILTER,
-            store=False,
-            timeout=SNIFF_TIMEOUT_SECONDS,
-            prn=lambda packet: process_packet(packet, state),
-        )
+    def on_packet(packet) -> None:
+        with state_lock:
+            process_packet(packet, state)
 
-        if state.dirty:
-            save_state(state)
-            state.dirty = False
+    sniffer = AsyncSniffer(
+        iface=INTERFACE,
+        filter=SNIFF_FILTER,
+        store=False,
+        prn=on_packet,
+    )
+    sniffer.start()
 
-        if time.monotonic() >= next_heartbeat:
-            log_heartbeat(state)
-            save_state(state)
-            next_heartbeat = time.monotonic() + HEARTBEAT_SECONDS
+    try:
+        while True:
+            time.sleep(min(SNIFF_TIMEOUT_SECONDS, 0.2))
+
+            with state_lock:
+                if time.monotonic() >= next_ovs_dhcp_poll:
+                    poll_ovs_dhcp_snooping(state)
+                    next_ovs_dhcp_poll = time.monotonic() + max(OVS_DHCP_SNOOPING_POLL_SECONDS, 0.5)
+
+                if state.dirty:
+                    save_state(state)
+                    state.dirty = False
+
+                if time.monotonic() >= next_heartbeat:
+                    log_heartbeat(state)
+                    save_state(state)
+                    next_heartbeat = time.monotonic() + HEARTBEAT_SECONDS
+    finally:
+        sniffer.stop()
 
 
 if __name__ == "__main__":

@@ -46,26 +46,41 @@ def total_events(
     return sum(counts.get(attack_type, 0) for attack_type in attack_types)
 
 
+def comparable_truth_counts(evaluation: RunEvaluation) -> dict[str, int]:
+    return {
+        attack_type: (
+            evaluation.ground_truth_attacker_action_types.get(attack_type)
+            or evaluation.ground_truth_attack_types.get(attack_type, 0)
+        )
+        for attack_type in ATTACK_TYPE_ORDER
+    }
+
+
 def event_recall_summary(
     evaluations: list[RunEvaluation],
     sensor_field: str,
     coverage_field: str,
 ) -> dict[str, Any]:
-    all_truth = sum(total_events(evaluation.ground_truth_attacker_action_types) for evaluation in evaluations)
-    all_matched = sum(
-        matched_events(evaluation.ground_truth_attacker_action_types, getattr(evaluation, sensor_field))
-        for evaluation in evaluations
-    )
+    all_truth = 0
+    all_matched = 0
+    for evaluation in evaluations:
+        coverage = getattr(evaluation, coverage_field)
+        allowed_types = [attack_type for attack_type in ATTACK_TYPE_ORDER if coverage.get(attack_type, False)]
+        truth_counts = comparable_truth_counts(evaluation)
+        all_truth += total_events(truth_counts, allowed_types=allowed_types)
+        all_matched += matched_events(truth_counts, getattr(evaluation, sensor_field), allowed_types=allowed_types)
     by_attack_type: dict[str, dict[str, float | int]] = {}
     for attack_type in ATTACK_TYPE_ORDER:
-        truth = sum(evaluation.ground_truth_attacker_action_types.get(attack_type, 0) for evaluation in evaluations)
-        matched = sum(
-            min(
-                evaluation.ground_truth_attacker_action_types.get(attack_type, 0),
-                getattr(evaluation, sensor_field).get(attack_type, 0),
-            )
-            for evaluation in evaluations
-        )
+        truth = 0
+        matched = 0
+        for evaluation in evaluations:
+            coverage = getattr(evaluation, coverage_field)
+            if not coverage.get(attack_type, False):
+                continue
+            truth_counts = comparable_truth_counts(evaluation)
+            truth_count = truth_counts.get(attack_type, 0)
+            truth += truth_count
+            matched += min(truth_count, getattr(evaluation, sensor_field).get(attack_type, 0))
         by_attack_type[attack_type] = {
             "matched_events": matched,
             "ground_truth_events": truth,
@@ -166,14 +181,15 @@ def event_recall(
     evaluation: RunEvaluation,
     sensor_field: str,
     coverage: dict[str, bool],
-    supported_only: bool = False,
+    supported_only: bool = True,
 ) -> float | None:
     sensor_counts = getattr(evaluation, sensor_field)
     allowed_types = [attack_type for attack_type in ATTACK_TYPE_ORDER if (coverage.get(attack_type, False) or not supported_only)]
-    truth = total_events(evaluation.ground_truth_attacker_action_types, allowed_types=allowed_types)
+    comparable_truth = comparable_truth_counts(evaluation)
+    truth = total_events(comparable_truth, allowed_types=allowed_types)
     if truth == 0:
         return None
-    matched = matched_events(evaluation.ground_truth_attacker_action_types, sensor_counts, allowed_types=allowed_types)
+    matched = matched_events(comparable_truth, sensor_counts, allowed_types=allowed_types)
     return safe_divide(matched, truth)
 
 
@@ -229,26 +245,26 @@ def render_single(evaluation: RunEvaluation) -> str:
 
 
 def render_multi(payload: dict[str, Any]) -> str:
+    def item_type_recall(item: dict[str, Any], sensor: str) -> float:
+        coverage = item.get(f"{sensor}_coverage", {})
+        counts = item.get(f"{sensor}_attack_type_counts", {})
+        allowed_types = [attack_type for attack_type in ATTACK_TYPE_ORDER if coverage.get(attack_type, False)]
+        truth = sum(1 for attack_type in allowed_types if item["ground_truth_attack_types"].get(attack_type, 0) > 0)
+        matched = sum(
+            1
+            for attack_type in allowed_types
+            if item["ground_truth_attack_types"].get(attack_type, 0) > 0 and counts.get(attack_type, 0) > 0
+        )
+        return safe_divide(matched, truth) if truth else 0.0
+
     lines = [
         "Run | Scenario | Truth | GT Action Events | Detector Alerts | Zeek Alerts | Suricata Alerts | Detector Type Recall | Zeek Type Recall | Suricata Type Recall | Detector TTD(s) | Zeek TTD(s) | Suricata TTD(s)",
         "--- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---",
     ]
     for item in payload["runs"]:
-        detector_allowed = ATTACK_TYPE_ORDER
-        zeek_allowed = ATTACK_TYPE_ORDER
-        suricata_allowed = ATTACK_TYPE_ORDER
-        detector_type_recall = safe_divide(
-            sum(1 for attack_type in detector_allowed if item["ground_truth_attack_types"].get(attack_type, 0) > 0 and item["detector_attack_type_counts"].get(attack_type, 0) > 0),
-            sum(1 for attack_type in detector_allowed if item["ground_truth_attack_types"].get(attack_type, 0) > 0),
-        ) if item["attack_present"] else 0.0
-        zeek_type_recall = safe_divide(
-            sum(1 for attack_type in zeek_allowed if item["ground_truth_attack_types"].get(attack_type, 0) > 0 and item["zeek_attack_type_counts"].get(attack_type, 0) > 0),
-            sum(1 for attack_type in zeek_allowed if item["ground_truth_attack_types"].get(attack_type, 0) > 0),
-        ) if item["attack_present"] else 0.0
-        suricata_type_recall = safe_divide(
-            sum(1 for attack_type in suricata_allowed if item["ground_truth_attack_types"].get(attack_type, 0) > 0 and item["suricata_attack_type_counts"].get(attack_type, 0) > 0),
-            sum(1 for attack_type in suricata_allowed if item["ground_truth_attack_types"].get(attack_type, 0) > 0),
-        ) if item["attack_present"] else 0.0
+        detector_type_recall = item_type_recall(item, "detector") if item["attack_present"] else 0.0
+        zeek_type_recall = item_type_recall(item, "zeek") if item["attack_present"] else 0.0
+        suricata_type_recall = item_type_recall(item, "suricata") if item["attack_present"] else 0.0
         lines.append(
             f"{item['run_id']} | {item['scenario']} | {item['attack_present']} | "
             f"{item['ground_truth_attacker_action_events']} | {item['detector_alert_events']} | {item['zeek_alert_events']} | "

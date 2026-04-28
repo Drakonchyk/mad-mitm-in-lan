@@ -69,14 +69,19 @@ flowchart LR
   - owns the Open vSwitch fabric and mirror port
   - runs the main detector on `mitm-sensor0`
   - runs Zeek and Suricata comparators on `mitm-sensor0` when enabled
-  - captures `pcap/sensor.pcap` as the preferred wire-truth source when `PCAP_ENABLE=1`
+  - captures `pcap/sensor.pcap` as the aggregate mirrored switch truth when `PCAP_ENABLE=1`
+  - captures `pcap/ports/{gateway,victim,attacker}.pcap` from the individual OVS/libvirt port interfaces when `PORT_PCAP_ENABLE=1`
   - orchestrates scenario runs
   - collects artifacts into `results/`
   - builds the main and supplementary reports
 - `mitm-gateway`:
   - provides the lab gateway, DNS service, and DHCP pool
   - is treated as the trusted DHCP server on the switch-facing LAN
+  - remains the only DHCP-server-trusted ingress port for OVS DHCP snooping monitor/enforce flows
   - can produce gateway-side pcap when `PCAP_ENABLE=1`
+- Detector:
+  - reads OVS DHCP snooping monitor counters and emits `dhcp_reply_from_untrusted_switch_port_seen` when DHCP server replies arrive from non-gateway ports
+  - continues to inspect mirrored ARP, DNS, ICMP, and DHCP packets directly
 - `mitm-victim`:
   - receives its lab address over DHCP from the gateway
 - `mitm-attacker`:

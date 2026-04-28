@@ -33,6 +33,7 @@ COMPOSITION_SERIES = {
     "multiple_gateway_macs_seen": "Multiple Gateway MACs",
     "icmp_redirects_seen": "ICMP Redirects",
     "rogue_dhcp_server_seen": "Rogue DHCP Server Seen",
+    "dhcp_reply_from_untrusted_switch_port_seen": "DHCP Reply From Untrusted Port",
     "dhcp_binding_conflict_seen": "DHCP Binding Conflict",
     "domain_resolution_changed": "Domain Resolution Changed",
     "restoration_events": "Restoration Events",

@@ -88,7 +88,7 @@ def time_to_detection_seconds(attack_started_at: str | datetime | None, first_al
     alert = parse_iso8601(first_alert_at)
     if start is None or alert is None:
         return None
-    return (alert - start).total_seconds()
+    return max((alert - start).total_seconds(), 0.0)
 
 
 def relative_overhead_percent(baseline_value: float, with_detector_value: float) -> float | None:
@@ -105,4 +105,3 @@ def relative_overhead_series_percent(
         relative_overhead_percent(baseline, with_detector)
         for baseline, with_detector in zip(baseline_values, with_detector_values)
     ]
-

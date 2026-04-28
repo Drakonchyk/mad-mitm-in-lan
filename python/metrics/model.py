@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-EVALUATION_CACHE_VERSION = 14
+EVALUATION_CACHE_VERSION = 20
 EVALUATION_DEPENDENCY_PATHS = [
     Path(__file__).resolve(),
     Path(__file__).resolve().with_name("core.py"),
     Path(__file__).resolve().with_name("parsers.py"),
+    Path(__file__).resolve().with_name("truth_db.py"),
 ]
 
 ATTACK_TYPE_ORDER = [
@@ -17,7 +18,8 @@ ATTACK_TYPE_ORDER = [
     "icmp_redirect",
     "dns_spoof",
     "dhcp_spoof",
-    "dhcp_starvation",
+    "dhcp_rogue_server",
+    "dhcp_untrusted_switch_port",
 ]
 
 ATTACK_TYPE_LABELS = {
@@ -25,7 +27,8 @@ ATTACK_TYPE_LABELS = {
     "icmp_redirect": "ICMP redirect",
     "dns_spoof": "DNS spoof",
     "dhcp_spoof": "DHCP spoof",
-    "dhcp_starvation": "DHCP starvation",
+    "dhcp_rogue_server": "DHCP rogue server identity",
+    "dhcp_untrusted_switch_port": "DHCP reply from untrusted switch port",
 }
 
 GROUND_TRUTH_ATTACK_EVENTS = {
@@ -34,29 +37,25 @@ GROUND_TRUTH_ATTACK_EVENTS = {
     "icmp_redirect_observed": "icmp_redirect",
     "dns_spoof": "dns_spoof",
     "dns_spoof_observed": "dns_spoof",
-    "rogue_dhcp_offer": "dhcp_spoof",
-    "rogue_dhcp_ack": "dhcp_spoof",
-    "rogue_dhcp_server_observed": "dhcp_spoof",
-    "dhcp_starvation_discover": "dhcp_starvation",
-    "dhcp_starvation_request": "dhcp_starvation",
-    "dhcp_starvation_observed": "dhcp_starvation",
+    "rogue_dhcp_offer": "dhcp_rogue_server",
+    "rogue_dhcp_ack": "dhcp_rogue_server",
+    "rogue_dhcp_server_observed": "dhcp_rogue_server",
+    "untrusted_port_sent_dhcp_server_reply": "dhcp_untrusted_switch_port",
 }
 
 DETECTOR_ALERT_EVENTS = {
     "arp_spoof_packet_seen": "arp_spoof",
     "icmp_redirect_packet_seen": "icmp_redirect",
     "dns_spoof_packet_seen": "dns_spoof",
-    "rogue_dhcp_server_seen": "dhcp_spoof",
-    "dhcp_binding_conflict_seen": "dhcp_spoof",
-    "dhcp_starvation_packet_seen": "dhcp_starvation",
+    "rogue_dhcp_server_seen": "dhcp_rogue_server",
+    "dhcp_reply_from_untrusted_switch_port_seen": "dhcp_untrusted_switch_port",
 }
 
 ZEEK_ALERT_TYPES = {
     "MITMLab::ARP_Spoof": "arp_spoof",
     "MITMLab::ICMP_Redirect": "icmp_redirect",
     "MITMLab::DNS_Spoof": "dns_spoof",
-    "MITMLab::DHCP_Spoof": "dhcp_spoof",
-    "MITMLab::DHCP_Starvation": "dhcp_starvation",
+    "MITMLab::DHCP_Spoof": "dhcp_rogue_server",
 }
 
 SURICATA_ALERT_TYPES = {
@@ -64,9 +63,8 @@ SURICATA_ALERT_TYPES = {
     "MITM-LAB Suricata EVE ARP reply from attacker claims gateway IP to victim": "arp_spoof",
     "MITM-LAB live ICMP redirect from attacker to victim": "icmp_redirect",
     "MITM-LAB live DNS answer contains attacker IP": "dns_spoof",
-    "MITM-LAB live rogue DHCP reply from attacker": "dhcp_spoof",
-    "MITM-LAB live DHCP starvation discover from spoofed client prefix": "dhcp_starvation",
-    "MITM-LAB live DHCP starvation request from spoofed client prefix": "dhcp_starvation",
+    "MITM-LAB live rogue DHCP reply from attacker": "dhcp_rogue_server",
+    "MITM-LAB live rogue DHCP reply from non-gateway server": "dhcp_rogue_server",
 }
 
 SENSOR_COVERAGE = {
@@ -75,21 +73,24 @@ SENSOR_COVERAGE = {
         "icmp_redirect": True,
         "dns_spoof": True,
         "dhcp_spoof": True,
-        "dhcp_starvation": True,
+        "dhcp_rogue_server": True,
+        "dhcp_untrusted_switch_port": True,
     },
     "zeek": {
         "arp_spoof": True,
         "icmp_redirect": True,
         "dns_spoof": True,
         "dhcp_spoof": True,
-        "dhcp_starvation": True,
+        "dhcp_rogue_server": True,
+        "dhcp_untrusted_switch_port": False,
     },
     "suricata": {
         "arp_spoof": False,
         "icmp_redirect": True,
         "dns_spoof": True,
         "dhcp_spoof": True,
-        "dhcp_starvation": True,
+        "dhcp_rogue_server": True,
+        "dhcp_untrusted_switch_port": False,
     },
 }
 
@@ -166,48 +167,6 @@ class RunEvaluation:
     suricata_coverage: dict[str, bool]
 
     def as_dict(self) -> dict[str, Any]:
-        return {
-            "run_id": self.run_id,
-            "scenario": self.scenario,
-            "attack_present": self.attack_present,
-            "ground_truth_total_events": self.ground_truth_total_events,
-            "ground_truth_attack_events": self.ground_truth_attack_events,
-            "ground_truth_attacker_action_events": self.ground_truth_attacker_action_events,
-            "ground_truth_control_events": self.ground_truth_control_events,
-            "ground_truth_attack_started_at": self.ground_truth_attack_started_at,
-            "ground_truth_attack_ended_at": self.ground_truth_attack_ended_at,
-            "ground_truth_capture_duration_seconds": self.ground_truth_capture_duration_seconds,
-            "ground_truth_attack_duration_seconds": self.ground_truth_attack_duration_seconds,
-            "ground_truth_attack_types": self.ground_truth_attack_types,
-            "ground_truth_attack_type_first_seen_at": self.ground_truth_attack_type_first_seen_at,
-            "ground_truth_attack_type_durations_seconds": self.ground_truth_attack_type_durations_seconds,
-            "ground_truth_attack_type_packet_rates_pps": self.ground_truth_attack_type_packet_rates_pps,
-            "ground_truth_attacker_action_types": self.ground_truth_attacker_action_types,
-            "ground_truth_control_types": self.ground_truth_control_types,
-            "ground_truth_dns_query_count": self.ground_truth_dns_query_count,
-            "ground_truth_dns_spoof_success_ratio": self.ground_truth_dns_spoof_success_ratio,
-            "ground_truth_arp_spoof_direction_counts": self.ground_truth_arp_spoof_direction_counts,
-            "ground_truth_control_plane_packet_counts": self.ground_truth_control_plane_packet_counts,
-            "detector_alert_events": self.detector_alert_events,
-            "detector_alert_types": self.detector_alert_types,
-            "detector_unique_alert_type_count": self.detector_unique_alert_type_count,
-            "detector_attack_type_counts": self.detector_attack_type_counts,
-            "detector_attack_type_first_alert_at": self.detector_attack_type_first_alert_at,
-            "detector_first_alert_at": self.detector_first_alert_at,
-            "detector_ttd_seconds": self.detector_ttd_seconds,
-            "zeek_alert_events": self.zeek_alert_events,
-            "zeek_alert_types": self.zeek_alert_types,
-            "zeek_unique_alert_type_count": self.zeek_unique_alert_type_count,
-            "zeek_attack_type_counts": self.zeek_attack_type_counts,
-            "zeek_attack_type_first_alert_at": self.zeek_attack_type_first_alert_at,
-            "zeek_first_alert_at": self.zeek_first_alert_at,
-            "zeek_ttd_seconds": self.zeek_ttd_seconds,
-            "suricata_alert_events": self.suricata_alert_events,
-            "suricata_alert_types": self.suricata_alert_types,
-            "suricata_unique_alert_type_count": self.suricata_unique_alert_type_count,
-            "suricata_attack_type_counts": self.suricata_attack_type_counts,
-            "suricata_attack_type_first_alert_at": self.suricata_attack_type_first_alert_at,
-            "suricata_first_alert_at": self.suricata_first_alert_at,
-            "suricata_ttd_seconds": self.suricata_ttd_seconds,
-            "combined_sensor_detected": (self.zeek_alert_events > 0 or self.suricata_alert_events > 0),
-        }
+        payload = asdict(self)
+        payload["combined_sensor_detected"] = self.zeek_alert_events > 0 or self.suricata_alert_events > 0
+        return payload

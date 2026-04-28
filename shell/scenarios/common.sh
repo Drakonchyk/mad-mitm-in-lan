@@ -63,15 +63,17 @@ run_automated_scenario_recording() {
   SKIP_LAB_START="1" \
   ATTACK_JOB_HOST="attacker" \
   ATTACK_JOB_LABEL="${attack_label}" \
-  ATTACK_JOB_CMD="${attack_cmd}" \
-  ATTACK_JOB_USE_SUDO="1" \
-  PCAP_ENABLE="${PCAP_ENABLE:-1}" \
-  GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE:-0}" \
+	  ATTACK_JOB_CMD="${attack_cmd}" \
+	  ATTACK_JOB_USE_SUDO="1" \
+	  PCAP_ENABLE="${PCAP_ENABLE:-0}" \
+	  PORT_PCAP_ENABLE="${PORT_PCAP_ENABLE:-0}" \
+	  GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE:-0}" \
   PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE:-0}" \
-  PCAP_RETENTION_POLICY="${PCAP_RETENTION_POLICY:-first-run-per-scenario}" \
+  PCAP_RETENTION_POLICY="${PCAP_RETENTION_POLICY:-all}" \
   IPERF_ENABLE="${IPERF_ENABLE:-0}" \
-  POST_ATTACK_SETTLE_SECONDS="${POST_ATTACK_SETTLE_SECONDS:-0}" \
-  RUN_SUMMARY_ENABLE="${RUN_SUMMARY_ENABLE:-1}" \
+	  POST_ATTACK_SETTLE_SECONDS="${POST_ATTACK_SETTLE_SECONDS:-0}" \
+	  RUN_SUMMARY_ENABLE="${RUN_SUMMARY_ENABLE:-1}" \
+	  DETECTOR_HEARTBEAT_SECONDS="${DETECTOR_HEARTBEAT_SECONDS:-2}" \
   AUX_JOB_HOST="${AUX_JOB_HOST:-}" \
   AUX_JOB_LABEL="${AUX_JOB_LABEL:-aux-job}" \
   AUX_JOB_CMD="${AUX_JOB_CMD:-}" \
@@ -89,35 +91,4 @@ run_automated_scenario_recording() {
   POST_CLEANUP_CMD="${POST_CLEANUP_CMD:-}" \
   POST_CLEANUP_USE_SUDO="${POST_CLEANUP_USE_SUDO:-0}" \
     "${REPO_ROOT}/shell/experiments/run-scenario-window.sh" "${scenario_name}" "${duration}" "${note}"
-}
-
-dhcp_starvation_gateway_cleanup_cmd() {
-  cat <<'EOF'
-python3 - '__PREFIX__' <<'PY'
-from pathlib import Path
-import sys
-
-prefix = sys.argv[1].lower()
-changed = False
-
-for candidate in (Path('/var/lib/misc/dnsmasq.leases'), Path('/var/lib/dhcp/dnsmasq.leases')):
-    if not candidate.exists():
-        continue
-    kept = []
-    for raw_line in candidate.read_text(encoding='utf-8', errors='replace').splitlines():
-        parts = raw_line.split()
-        if len(parts) >= 2 and parts[1].lower().startswith(prefix):
-            changed = True
-            continue
-        kept.append(raw_line)
-    if changed:
-        candidate.write_text(('\n'.join(kept) + '\n') if kept else '', encoding='utf-8')
-
-if changed:
-    print(f"purged DHCP starvation leases for prefix {prefix}")
-else:
-    print(f"no DHCP starvation leases found for prefix {prefix}")
-PY
-systemctl restart dnsmasq
-EOF
 }

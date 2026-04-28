@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -10,8 +11,11 @@ from typing import Any, Iterable
 
 from lab.config import load_lab_config
 from metrics.model import GROUND_TRUTH_ATTACK_EVENTS
+from metrics.run_artifacts import parse_ovs_dhcp_snooping_stats, parse_ovs_switch_truth_snooping_stats
+from metrics.truth_db import TRUTH_DB_RELATIVE_PATH, trusted_observation_counts, trusted_observation_epochs_by_type
 
 WIRE_TRUTH_SUMMARY_NAME = "wire-truth.json"
+TSHARK_TIMEOUT_SECONDS = float(os.getenv("MITM_LAB_TSHARK_TIMEOUT_SECONDS", "10"))
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -82,22 +86,27 @@ def run_tshark_fields(pcap_path: Path, display_filter: str, field: str) -> list[
     if not pcap_path.exists() or shutil.which("tshark") is None:
         return []
 
-    result = subprocess.run(
-        [
-            "tshark",
-            "-r",
-            str(pcap_path),
-            "-Y",
-            display_filter,
-            "-T",
-            "fields",
-            "-e",
-            field,
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "tshark",
+                "-n",
+                "-r",
+                str(pcap_path),
+                "-Y",
+                display_filter,
+                "-T",
+                "fields",
+                "-e",
+                field,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=TSHARK_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return []
     if result.returncode != 0:
         return []
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
@@ -109,6 +118,7 @@ def run_tshark_rows(pcap_path: Path, display_filter: str, fields: list[str]) -> 
 
     command = [
         "tshark",
+        "-n",
         "-r",
         str(pcap_path),
         "-Y",
@@ -119,12 +129,16 @@ def run_tshark_rows(pcap_path: Path, display_filter: str, fields: list[str]) -> 
     for field in fields:
         command.extend(["-e", field])
     command.extend(["-E", "separator=\t"])
-    result = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=TSHARK_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return []
     if result.returncode != 0:
         return []
     return [line.split("\t") for line in result.stdout.splitlines() if line.strip()]
@@ -174,6 +188,61 @@ def observed_wire_pcap_path(run_dir: Path) -> Path | None:
     return None
 
 
+def untrusted_switch_port_pcap_paths(run_dir: Path) -> list[Path]:
+    ports_dir = run_dir / "pcap" / "ports"
+    candidates = [
+        ports_dir / "attacker.pcap",
+        ports_dir / "victim.pcap",
+    ]
+    return [path for path in candidates if path.exists()]
+
+
+def ovs_dhcp_snooping_epoch_fallback(run_dir: Path, meta: dict[str, Any]) -> list[str]:
+    stats = parse_ovs_dhcp_snooping_stats(run_dir / "detector" / "ovs-dhcp-snooping.txt")
+    try:
+        packet_count = int(stats.get("packets", 0))
+    except (TypeError, ValueError):
+        return []
+    if packet_count <= 0:
+        return []
+
+    ts = parse_timestamp(str(meta.get("attack_started_at") or meta.get("started_at") or ""))
+    if ts is None:
+        return []
+    epoch = f"{ts.timestamp():.6f}"
+    return [epoch] * packet_count
+
+
+def repeated_epochs_from_count(meta: dict[str, Any], count: int) -> list[str]:
+    if count <= 0:
+        return []
+    ts = parse_timestamp(str(meta.get("attack_started_at") or meta.get("started_at") or ""))
+    if ts is None:
+        return []
+    epoch = f"{ts.timestamp():.6f}"
+    return [epoch] * count
+
+
+def switch_snooping_attack_epochs_by_type(run_dir: Path, meta: dict[str, Any]) -> dict[str, list[str]]:
+    stats = parse_ovs_switch_truth_snooping_stats(run_dir / "detector" / "ovs-switch-truth-snooping.txt")
+    by_type = stats.get("packets_by_type", {})
+    epochs: dict[str, list[str]] = {}
+    if isinstance(by_type, dict):
+        for attack_type in ("arp_spoof",):
+            try:
+                count = int(by_type.get(attack_type, 0))
+            except (TypeError, ValueError):
+                count = 0
+            values = repeated_epochs_from_count(meta, count)
+            if values:
+                epochs[attack_type] = values
+
+    dhcp_values = ovs_dhcp_snooping_epoch_fallback(run_dir, meta)
+    if dhcp_values:
+        epochs["dhcp_untrusted_switch_port"] = dhcp_values
+    return epochs
+
+
 def wire_truth_summary_path(run_dir: Path) -> Path:
     return run_dir / "pcap" / WIRE_TRUTH_SUMMARY_NAME
 
@@ -196,10 +265,14 @@ def observed_wire_source_label(run_dir: Path) -> str | None:
 
     summary = load_wire_truth_summary(run_dir)
     source = summary.get("ground_truth_source")
-    if isinstance(source, str) and source in {"switch_pcap", "victim_pcap"}:
+    if isinstance(source, str) and source in {"switch_pcap", "victim_pcap", "trusted_observation_db", "switch_snooping"}:
         return source
     if summary:
-        return "switch_pcap"
+        return "wire_truth_summary"
+    if trusted_observation_epochs_by_type(run_dir):
+        return "trusted_observation_db"
+    if switch_snooping_attack_epochs_by_type(run_dir, load_json(run_dir / "run-meta.json")):
+        return "switch_snooping"
     return None
 
 
@@ -214,17 +287,21 @@ def observed_wire_attack_epochs_by_type(
     gateway_ip = meta.get("gateway_lab_ip")
     gateway_mac = str(meta.get("gateway_lab_mac", "")).lower() or None
     attacker_mac = attacker_mac_for_run(meta, attack_records)
-    starvation_mac_prefix = (load_lab_config().get("DHCP_STARVATION_MAC_PREFIX", "02:aa:20") or "02:aa:20").lower()
     if pcap_path is None:
+        db_epochs = trusted_observation_epochs_by_type(run_dir)
+        if db_epochs:
+            return db_epochs
         summary = load_wire_truth_summary(run_dir)
         values = summary.get("attack_epochs_by_type", {})
         if not isinstance(values, dict):
-            return {}
+            return switch_snooping_attack_epochs_by_type(run_dir, meta)
         normalized: dict[str, list[str]] = {}
         for attack_type, epochs in values.items():
             if not isinstance(attack_type, str) or not isinstance(epochs, list):
                 continue
             normalized[attack_type] = [str(epoch) for epoch in epochs if str(epoch)]
+        for attack_type, epochs in switch_snooping_attack_epochs_by_type(run_dir, meta).items():
+            normalized.setdefault(attack_type, epochs)
         return dict(sorted(normalized.items()))
 
     epochs: dict[str, list[str]] = {}
@@ -258,27 +335,29 @@ def observed_wire_attack_epochs_by_type(
             "frame.time_epoch",
         )
     if gateway_mac:
-        epochs["dhcp_spoof"] = run_tshark_fields(
-            pcap_path,
-            f"bootp && udp.srcport==67 && udp.dstport==68 && eth.src!={gateway_mac}",
-            "frame.time_epoch",
-        )
-    starvation_rows = run_tshark_rows(
-        pcap_path,
-        "bootp && udp.srcport==68 && udp.dstport==67",
-        ["frame.time_epoch", "eth.src", "bootp.option.dhcp"],
-    )
-    starvation_epochs: list[str] = []
-    for row in starvation_rows:
-        if len(row) < 3:
-            continue
-        epoch, src_mac, message_type = row[0].strip(), row[1].strip().lower(), row[2].strip().lower()
-        if not epoch or not src_mac.startswith(starvation_mac_prefix):
-            continue
-        if message_type in {"1", "3", "discover", "request"}:
-            starvation_epochs.append(epoch)
-    if starvation_epochs:
-        epochs["dhcp_starvation"] = starvation_epochs
+        untrusted_dhcp_epochs: list[str] = []
+        for port_pcap in untrusted_switch_port_pcap_paths(run_dir):
+            untrusted_dhcp_epochs.extend(
+                run_tshark_fields(
+                    port_pcap,
+                    "bootp && udp.srcport==67 && udp.dstport==68",
+                    "frame.time_epoch",
+                )
+            )
+        if untrusted_dhcp_epochs:
+            epochs["dhcp_untrusted_switch_port"] = sorted(untrusted_dhcp_epochs, key=float)
+        else:
+            epochs["dhcp_untrusted_switch_port"] = run_tshark_fields(
+                pcap_path,
+                f"bootp && udp.srcport==67 && udp.dstport==68 && eth.src!={gateway_mac}",
+                "frame.time_epoch",
+            )
+        if not epochs["dhcp_untrusted_switch_port"]:
+            epochs["dhcp_untrusted_switch_port"] = ovs_dhcp_snooping_epoch_fallback(run_dir, meta)
+    if gateway_ip and not epochs.get("arp_spoof"):
+        switch_epochs = switch_snooping_attack_epochs_by_type(run_dir, meta)
+        if switch_epochs.get("arp_spoof"):
+            epochs["arp_spoof"] = switch_epochs["arp_spoof"]
     return epochs
 
 
@@ -381,18 +460,12 @@ def observed_wire_attack_records(run_dir: Path, meta: dict[str, Any]) -> list[di
         except ValueError:
             continue
         records.append({"event": "icmp_redirect_observed", "ts": ts})
-    for value in epochs_by_type.get("dhcp_spoof", []):
+    for value in epochs_by_type.get("dhcp_untrusted_switch_port", []):
         try:
             ts = datetime.fromtimestamp(float(value), timezone.utc).isoformat()
         except ValueError:
             continue
-        records.append({"event": "rogue_dhcp_server_observed", "ts": ts})
-    for value in epochs_by_type.get("dhcp_starvation", []):
-        try:
-            ts = datetime.fromtimestamp(float(value), timezone.utc).isoformat()
-        except ValueError:
-            continue
-        records.append({"event": "dhcp_starvation_observed", "ts": ts})
+        records.append({"event": "untrusted_port_sent_dhcp_server_reply", "ts": ts})
     return records
 
 
@@ -434,6 +507,17 @@ def build_wire_truth_summary(
     epochs_by_type = observed_wire_attack_epochs_by_type(run_dir, meta, attack_records)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "ground_truth_source": source,
+        "trusted_observation_db": str(TRUTH_DB_RELATIVE_PATH) if (run_dir / TRUTH_DB_RELATIVE_PATH).exists() else None,
+        "trusted_observation_counts_by_type": trusted_observation_counts(run_dir),
+        "switch_snooping_attack_epochs_by_type": switch_snooping_attack_epochs_by_type(run_dir, meta),
+        "dhcp_truth_source": "untrusted_switch_port_pcap" if untrusted_switch_port_pcap_paths(run_dir) else source,
+        "switch_truth_snooping_packets_by_type": parse_ovs_switch_truth_snooping_stats(
+            run_dir / "detector" / "ovs-switch-truth-snooping.txt"
+        ).get("packets_by_type", {}),
+        "dhcp_snooping_untrusted_reply_packets": parse_ovs_dhcp_snooping_stats(
+            run_dir / "detector" / "ovs-dhcp-snooping.txt"
+        ).get("packets", 0),
         "capture_duration_seconds": observed_wire_capture_duration_seconds(run_dir),
         "attack_epochs_by_type": epochs_by_type,
         "dns_query_count": observed_wire_dns_query_count(run_dir, meta),

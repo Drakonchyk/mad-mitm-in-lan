@@ -41,6 +41,11 @@ def _mean_or_none(values: list[float | None]) -> float | None:
     return sum(clean) / len(clean)
 
 
+def _counter_sum(row: dict[str, Any], field_name: str, keys: tuple[str, ...]) -> float:
+    counts = row.get(field_name, {}) or {}
+    return float(sum(counts.get(key, 0) or 0 for key in keys))
+
+
 def _write_rows(path: Path, rows: list[dict[str, Any]]) -> Path | None:
     if not rows:
         return None
@@ -243,10 +248,12 @@ def build_table_wire_truth_summary(rows: list[dict[str, Any]], output_dir: Path)
                 "mean_arp_packets": _mean_or_none([float((row.get("ground_truth_attack_types", {}) or {}).get("arp_spoof", 0) or 0) for row in scenario_rows]),
                 "mean_arp_actions": _mean_or_none([float((row.get("ground_truth_attacker_action_types", {}) or {}).get("arp_spoof", 0) or 0) for row in scenario_rows]),
                 "mean_dns_packets": _mean_or_none([float((row.get("ground_truth_attack_types", {}) or {}).get("dns_spoof", 0) or 0) for row in scenario_rows]),
-                "mean_dhcp_packets": _mean_or_none([float((row.get("ground_truth_attack_types", {}) or {}).get("dhcp_spoof", 0) or 0) for row in scenario_rows]),
+                "mean_dhcp_rogue_server_packets": _mean_or_none([float((row.get("ground_truth_attack_types", {}) or {}).get("dhcp_rogue_server", 0) or 0) for row in scenario_rows]),
+                "mean_dhcp_untrusted_port_packets": _mean_or_none([float((row.get("ground_truth_attack_types", {}) or {}).get("dhcp_untrusted_switch_port", 0) or 0) for row in scenario_rows]),
+                "mean_dhcp_packets": _mean_or_none([_counter_sum(row, "ground_truth_attack_types", ("dhcp_rogue_server", "dhcp_untrusted_switch_port", "dhcp_spoof")) for row in scenario_rows]),
                 "mean_arp_pps": _mean_or_none([float((row.get("ground_truth_attack_type_packet_rates_pps", {}) or {}).get("arp_spoof", 0) or 0) for row in scenario_rows]),
                 "mean_dns_pps": _mean_or_none([float((row.get("ground_truth_attack_type_packet_rates_pps", {}) or {}).get("dns_spoof", 0) or 0) for row in scenario_rows]),
-                "mean_dhcp_pps": _mean_or_none([float((row.get("ground_truth_attack_type_packet_rates_pps", {}) or {}).get("dhcp_spoof", 0) or 0) for row in scenario_rows]),
+                "mean_dhcp_pps": _mean_or_none([_counter_sum(row, "ground_truth_attack_type_packet_rates_pps", ("dhcp_rogue_server", "dhcp_untrusted_switch_port", "dhcp_spoof")) for row in scenario_rows]),
                 "mean_dns_query_count": _mean_or_none([float(row.get("ground_truth_dns_query_count") or 0) for row in scenario_rows]),
                 "mean_dns_success_ratio": _mean_or_none([row.get("ground_truth_dns_spoof_success_ratio") for row in scenario_rows]),
             }
@@ -326,21 +333,19 @@ def build_table_thesis_detector_semantics(rows: list[dict[str, Any]], output_dir
                 "domain_resolution_changed_mean": _mean_or_none([float(row.get("domain_resolution_changed") or 0) for row in scenario_rows]),
                 "rogue_dhcp_server_seen_mean": _mean_or_none([float(row.get("rogue_dhcp_server_seen") or 0) for row in scenario_rows]),
                 "dhcp_binding_conflict_seen_mean": _mean_or_none([float(row.get("dhcp_binding_conflict_seen") or 0) for row in scenario_rows]),
-                "dhcp_starvation_packet_seen_mean": _mean_event_count(scenario_rows, "dhcp_starvation_packet_seen"),
-                "dhcp_starvation_seen_mean": _mean_event_count(scenario_rows, "dhcp_starvation_seen"),
                 "restoration_events_mean": _mean_or_none([float(row.get("restoration_events") or 0) for row in scenario_rows]),
             }
         )
     return _write_rows(output_dir / "table-03-thesis-detector-semantic-coverage.csv", table_rows)
 
 
-def build_table_thesis_visibility_thresholds(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
+def build_table_thesis_reliability_thresholds(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
     table_rows: list[dict[str, Any]] = []
-    for scenario in ["visibility-arp-mitm-dns", "visibility-dhcp-spoof"]:
+    for scenario in ["reliability-arp-mitm-dns", "reliability-dhcp-spoof"]:
         scenario_rows = rows_for_scenario(rows, scenario)
         if not scenario_rows:
             continue
-        levels = sorted({int(row.get("sensor_visibility_percent") or 0) for row in scenario_rows}, reverse=True)
+        levels = sorted({int(row.get("reliability_netem_loss_percent") or 0) for row in scenario_rows})
         for tool in TOOL_ORDER:
             detected_rows = [row for row in scenario_rows if row.get(f"{tool}_detected")]
             missed_rows = [row for row in scenario_rows if not row.get(f"{tool}_detected")]
@@ -349,50 +354,17 @@ def build_table_thesis_visibility_thresholds(rows: list[dict[str, Any]], output_
                 {
                     "scenario": SCENARIO_LABELS[scenario],
                     "tool": TOOL_LABELS[tool],
-                    "visibility_levels_tested": " ".join(str(level) for level in levels),
+                    "loss_levels_tested": " ".join(str(level) for level in levels),
                     "runs": len(scenario_rows),
                     "detected_runs": len(detected_rows),
                     "detection_rate_pct": _rate_pct(len(detected_rows), len(scenario_rows)),
-                    "lowest_visibility_with_detection_pct": min((int(row.get("sensor_visibility_percent") or 0) for row in detected_rows), default=None),
-                    "highest_visibility_with_miss_pct": max((int(row.get("sensor_visibility_percent") or 0) for row in missed_rows), default=None),
+                    "highest_loss_with_detection_pct": max((int(row.get("reliability_netem_loss_percent") or 0) for row in detected_rows), default=None),
+                    "lowest_loss_with_miss_pct": min((int(row.get("reliability_netem_loss_percent") or 0) for row in missed_rows), default=None),
                     "mean_event_recall_pct": _mean_or_none(recalls),
                     "min_event_recall_pct": min(recalls) if recalls else None,
                 }
             )
-    return _write_rows(output_dir / "table-04-thesis-visibility-thresholds.csv", table_rows)
-
-
-def build_table_thesis_starvation_scaling(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
-    scenario_rows = [row for row in rows_for_scenario(rows, "dhcp-starvation-rogue-dhcp") if row.get("dhcp_starvation_workers") is not None]
-    groups: dict[tuple[int, str], list[dict[str, Any]]] = {}
-    for row in scenario_rows:
-        workers = int(row.get("dhcp_starvation_workers") or 0)
-        mode = "takeover" if row.get("takeover_enabled") else "lease-flood"
-        groups.setdefault((workers, mode), []).append(row)
-
-    table_rows: list[dict[str, Any]] = []
-    for (workers, mode), group_rows in sorted(groups.items()):
-        pool_full_rows = [row for row in group_rows if row.get("dhcp_pool_full_at")]
-        takeover_success_rows = [row for row in group_rows if row.get("dhcp_takeover_success")]
-        table_rows.append(
-            {
-                "workers": workers,
-                "mode": mode,
-                "runs": len(group_rows),
-                "pool_total_mean": _mean_or_none([row.get("dhcp_pool_total") for row in group_rows]),
-                "attack_leases_max_mean": _mean_or_none([row.get("dhcp_attack_leases_max") for row in group_rows]),
-                "pool_free_min_mean": _mean_or_none([row.get("dhcp_pool_free_min") for row in group_rows]),
-                "pool_full_runs": len(pool_full_rows),
-                "pool_full_rate_pct": _rate_pct(len(pool_full_rows), len(group_rows)),
-                "pool_full_mean_seconds_from_attack_start": _mean_or_none([row.get("dhcp_pool_full_seconds_from_attack_start") for row in pool_full_rows]),
-                "rogue_first_event_mean_seconds_from_rogue_start": _mean_or_none([row.get("dhcp_rogue_first_event_seconds_from_rogue_start") for row in group_rows]),
-                "takeover_success_runs": len(takeover_success_rows),
-                "takeover_success_rate_pct": _rate_pct(len(takeover_success_rows), len(group_rows)) if mode == "takeover" else None,
-                "takeover_mean_seconds_from_rogue_start": _mean_or_none([row.get("dhcp_takeover_seconds_from_rogue_start") for row in takeover_success_rows]),
-                "takeover_mean_seconds_from_pool_full": _mean_or_none([row.get("dhcp_takeover_seconds_from_pool_full") for row in takeover_success_rows]),
-            }
-        )
-    return _write_rows(output_dir / "table-05-thesis-dhcp-starvation-scaling.csv", table_rows)
+    return _write_rows(output_dir / "table-04-thesis-reliability-thresholds.csv", table_rows)
 
 
 def build_table_thesis_recovery_timing(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:

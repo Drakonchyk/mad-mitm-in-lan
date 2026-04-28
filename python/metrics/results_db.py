@@ -105,8 +105,6 @@ def create_schema(connection: sqlite3.Connection) -> None:
             reliability_delay_ms REAL,
             reliability_jitter_ms REAL,
             reliability_rate TEXT,
-            overload_total_pps INTEGER,
-            overload_pps_per_source INTEGER,
             created_or_updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -348,9 +346,9 @@ def upsert_run(
                 suricata_packets_seen, suricata_packets_processed, suricata_packets_dropped,
                 suricata_max_seen_pps, suricata_max_processed_pps,
                 reliability_loss_percent, reliability_delay_ms, reliability_jitter_ms,
-                reliability_rate, overload_total_pps, overload_pps_per_source
+                reliability_rate
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 evaluation.run_id,
@@ -394,8 +392,6 @@ def upsert_run(
                 optional_float(meta.get("reliability_netem_delay_ms")),
                 optional_float(meta.get("reliability_netem_jitter_ms")),
                 meta.get("reliability_netem_rate"),
-                optional_int(meta.get("overload_total_pps")),
-                optional_int(meta.get("overload_pps_per_source")),
             ),
         )
 

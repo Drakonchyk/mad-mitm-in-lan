@@ -38,7 +38,7 @@ This page maps generated artifacts to the parts of the thesis they are most usef
   - detector and orchestration source files
 - main results:
   - `results/experiment-report/`
-- supplementary comparison:
+- reliability comparison:
   - `results/experiment-report/`
 - appendix / reproducibility:
   - `docs/evaluation-metrics.md`

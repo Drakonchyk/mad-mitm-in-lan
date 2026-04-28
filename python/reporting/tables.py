@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from metrics.primitives import confusion_from_binary, safe_divide
+from metrics.primitives import safe_divide
 from metrics.run_artifacts import detector_delta_path, load_json, load_jsonl, parse_traffic_windows
 from reporting.common import (
     SCENARIO_LABELS,
@@ -66,7 +66,7 @@ def _write_rows(path: Path, rows: list[dict[str, Any]]) -> Path | None:
 
 
 def _choose_representative_run(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    preferred = ["mitigation-recovery", "arp-mitm-dns", "arp-mitm-forward", "arp-poison-no-forward"]
+    preferred = ["arp-mitm-dns", "arp-mitm-forward", "arp-poison-no-forward"]
     for scenario in preferred:
         candidates = [
             row
@@ -79,7 +79,7 @@ def _choose_representative_run(rows: list[dict[str, Any]]) -> dict[str, Any] | N
 
 
 def _choose_pcap_run(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    preferred = ["mitigation-recovery", "arp-mitm-dns", "arp-mitm-forward", "arp-poison-no-forward"]
+    preferred = ["arp-mitm-dns", "arp-mitm-forward", "arp-poison-no-forward"]
     for scenario in preferred:
         candidates = [
             row
@@ -192,21 +192,18 @@ def build_table_operational_summary(rows: list[dict[str, Any]], output_dir: Path
 
 def build_table_tool_overall(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
     attack_rows = [row for row in rows if SCENARIO_ATTACK_TYPES.get(str(row["scenario"]))]
-    ground_truth = [bool(SCENARIO_ATTACK_TYPES.get(str(row["scenario"]))) for row in rows]
+    baseline_rows = [row for row in rows if str(row["scenario"]) == "baseline"]
     table_rows = []
     for tool in TOOL_ORDER:
-        confusion = confusion_from_binary(ground_truth, [bool(row.get(f"{tool}_detected")) for row in rows])
         table_rows.append(
             {
                 "tool": TOOL_LABELS[tool],
-                "tp": confusion.tp,
-                "fp": confusion.fp,
-                "tn": confusion.tn,
-                "fn": confusion.fn,
-                "tpr": confusion.true_positive_rate(),
-                "fpr": confusion.false_positive_rate(),
-                "precision": confusion.precision(),
-                "f1": confusion.f1(),
+                "attack_runs": len(attack_rows),
+                "attack_runs_with_alerts": sum(1 for row in attack_rows if bool(row.get(f"{tool}_detected"))),
+                "baseline_runs": len(baseline_rows),
+                "baseline_runs_with_alerts": sum(
+                    1 for row in baseline_rows if int(row.get(tool_alert_field(tool)) or 0) > 0
+                ),
                 "mean_attack_relative_ttd_s": _mean_or_none([attack_relative_ttd(row, tool) for row in attack_rows]),
                 "mean_ttd_s": row_mean([row.get(f"{tool}_ttd_seconds") for row in attack_rows]),
                 "mean_alerts_per_run": row_mean([row.get(tool_alert_field(tool)) for row in rows]),
@@ -333,7 +330,6 @@ def build_table_thesis_detector_semantics(rows: list[dict[str, Any]], output_dir
                 "domain_resolution_changed_mean": _mean_or_none([float(row.get("domain_resolution_changed") or 0) for row in scenario_rows]),
                 "rogue_dhcp_server_seen_mean": _mean_or_none([float(row.get("rogue_dhcp_server_seen") or 0) for row in scenario_rows]),
                 "dhcp_binding_conflict_seen_mean": _mean_or_none([float(row.get("dhcp_binding_conflict_seen") or 0) for row in scenario_rows]),
-                "restoration_events_mean": _mean_or_none([float(row.get("restoration_events") or 0) for row in scenario_rows]),
             }
         )
     return _write_rows(output_dir / "table-03-thesis-detector-semantic-coverage.csv", table_rows)
@@ -365,29 +361,6 @@ def build_table_thesis_reliability_thresholds(rows: list[dict[str, Any]], output
                 }
             )
     return _write_rows(output_dir / "table-04-thesis-reliability-thresholds.csv", table_rows)
-
-
-def build_table_thesis_recovery_timing(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
-    scenario_rows = rows_for_scenario(rows, "mitigation-recovery")
-    if not scenario_rows:
-        return None
-    recovery_values = [
-        float(row.get("detector_recovery_seconds"))
-        for row in scenario_rows
-        if row.get("detector_recovery_seconds") is not None
-    ]
-    table_rows = [
-        {
-            "scenario": SCENARIO_LABELS["mitigation-recovery"],
-            "runs": len(scenario_rows),
-            "restoration_runs": len(recovery_values),
-            "restoration_rate_pct": _rate_pct(len(recovery_values), len(scenario_rows)),
-            "detector_recovery_mean_s": _mean_or_none(recovery_values),
-            "detector_recovery_min_s": min(recovery_values) if recovery_values else None,
-            "detector_recovery_max_s": max(recovery_values) if recovery_values else None,
-        }
-    ]
-    return _write_rows(output_dir / "table-06-thesis-recovery-timing.csv", table_rows)
 
 
 def build_table_representative_context(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:

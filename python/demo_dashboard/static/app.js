@@ -32,6 +32,7 @@ const logPathTargets = {
 let cachedScenarios = [];
 let busy = false;
 let selectedScenario = "";
+let activeResultsDbTab = "overview";
 
 function scenarioByName(name) {
   return cachedScenarios.find((scenario) => scenario.name === name);
@@ -223,6 +224,15 @@ function formatMetric(value, digits = 2) {
   return number.toFixed(digits);
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function formatLossLevels(raw) {
   if (!raw) {
     return "";
@@ -375,42 +385,129 @@ function renderResultsDbSummary(summary) {
       </div>
     `;
   }).join("");
-  const scenarioRows = (summary.scenarios || []).slice(0, 8).map((scenario) => {
+
+  const scenarioRows = (summary.scenarios || []).map((scenario) => {
     const losses = formatLossLevels(scenario.reliability_losses);
     return `
-      <div class="scenario-summary-row">
-        <div>
-          <strong>${scenario.label || scenario.scenario}</strong>
-          <div class="muted">${scenario.latest_started_at || ""}${losses ? ` · loss ${losses}` : ""}</div>
-          <div class="muted">alerts D/Z/S ${scenario.detector_alerts ?? 0}/${scenario.zeek_alerts ?? 0}/${scenario.suricata_alerts ?? 0}</div>
-        </div>
-        <div class="scenario-summary-counts">
-          <strong>${scenario.run_count}</strong>
-          <span class="muted">runs</span>
-          ${scenario.retained_count ? `<span class="badge">${scenario.retained_count} saved</span>` : ""}
-        </div>
-      </div>
+      <tr>
+        <td><strong>${escapeHtml(scenario.label || scenario.scenario)}</strong><div class="muted">${escapeHtml(scenario.scenario)}</div></td>
+        <td class="num">${scenario.run_count ?? 0}</td>
+        <td class="num">${scenario.retained_count ?? 0}</td>
+        <td>${escapeHtml(losses || "—")}</td>
+        <td class="num">${scenario.detector_alerts ?? 0}</td>
+        <td class="num">${scenario.zeek_alerts ?? 0}</td>
+        <td class="num">${scenario.suricata_alerts ?? 0}</td>
+        <td>${escapeHtml(scenario.latest_started_at || "—")}</td>
+      </tr>
     `;
   }).join("");
+  const lossRows = (summary.loss_coverage || []).map((row) => `
+    <tr>
+      <td><strong>${escapeHtml(row.label || row.scenario)}</strong></td>
+      <td class="num">${row.loss_percent ?? "—"}%</td>
+      <td class="num">${row.run_count ?? 0}</td>
+      <td class="num">${formatMetric(row.detector_alerts_avg, 1)}</td>
+      <td class="num">${formatMetric(row.zeek_alerts_avg, 1)}</td>
+      <td class="num">${formatMetric(row.suricata_alerts_avg, 1)}</td>
+      <td class="num">${formatMetric(row.detector_ttd_avg, 3)}</td>
+      <td class="num">${formatMetric(row.zeek_ttd_avg, 3)}</td>
+      <td class="num">${formatMetric(row.suricata_ttd_avg, 3)}</td>
+    </tr>
+  `).join("");
+  const attackRows = (summary.attack_types || []).map((row) => `
+    <tr>
+      <td><strong>${escapeHtml(row.label || row.scenario)}</strong></td>
+      <td>${escapeHtml(row.attack_type)}</td>
+      <td class="num">${row.truth_count ?? 0}</td>
+      <td class="num">${row.detector_count ?? 0}</td>
+      <td class="num">${row.zeek_count ?? 0}</td>
+      <td class="num">${row.suricata_count ?? 0}</td>
+    </tr>
+  `).join("");
+  const recentRows = (summary.recent_runs || []).map((row) => `
+    <tr>
+      <td><strong>${escapeHtml(row.run_id)}</strong><div class="muted">${escapeHtml(row.started_at || "—")}</div></td>
+      <td>${escapeHtml(row.label || row.scenario)}</td>
+      <td>${escapeHtml(row.mode || "—")}</td>
+      <td class="num">${row.reliability_loss_percent === null || row.reliability_loss_percent === undefined ? "—" : `${row.reliability_loss_percent}%`}</td>
+      <td>${escapeHtml(row.ground_truth_source || "—")}</td>
+      <td class="num">${formatMetric(row.duration_seconds, 1)}</td>
+      <td class="num">${row.detector_alert_events ?? 0}</td>
+      <td class="num">${row.zeek_alert_events ?? 0}</td>
+      <td class="num">${row.suricata_alert_events ?? 0}</td>
+      <td>${row.raw_artifacts_retained ? "saved" : "compact"}</td>
+    </tr>
+  `).join("");
+
+  const tabs = [
+    ["overview", "Overview"],
+    ["scenarios", "Scenarios"],
+    ["loss", "Loss Coverage"],
+    ["attacks", "Attack Types"],
+    ["recent", "Recent Runs"],
+  ];
+  if (!tabs.some(([key]) => key === activeResultsDbTab)) {
+    activeResultsDbTab = "overview";
+  }
+  const tabButtons = tabs.map(([key, label]) => `
+    <button type="button" class="db-tab-button ${activeResultsDbTab === key ? "active" : ""}" data-db-tab="${key}">${label}</button>
+  `).join("");
+
+  const tables = {
+    overview: `
+      <div class="tool-counters db-topline">
+        <div class="mini-metric"><div class="label">runs</div><div class="value">${summary.total_runs ?? 0}</div></div>
+        <div class="mini-metric"><div class="label">saved</div><div class="value">${summary.retained_runs ?? 0}</div></div>
+        <div class="mini-metric"><div class="label">pcaps</div><div class="value">${summary.pcap_runs ?? 0}</div></div>
+      </div>
+      <div class="sensor-summary-grid">${sensorRows}</div>
+    `,
+    scenarios: `
+      <div class="db-table-wrap">
+        <table class="db-table">
+          <thead><tr><th>Scenario</th><th>Runs</th><th>Saved</th><th>Losses</th><th>D</th><th>Z</th><th>S</th><th>Latest</th></tr></thead>
+          <tbody>${scenarioRows || `<tr><td colspan="8" class="muted">No scenario rows yet.</td></tr>`}</tbody>
+        </table>
+      </div>
+    `,
+    loss: `
+      <div class="db-table-wrap">
+        <table class="db-table">
+          <thead><tr><th>Scenario</th><th>Loss</th><th>Runs</th><th>D avg</th><th>Z avg</th><th>S avg</th><th>D TTD</th><th>Z TTD</th><th>S TTD</th></tr></thead>
+          <tbody>${lossRows || `<tr><td colspan="9" class="muted">No reliability loss rows yet.</td></tr>`}</tbody>
+        </table>
+      </div>
+    `,
+    attacks: `
+      <div class="db-table-wrap">
+        <table class="db-table">
+          <thead><tr><th>Scenario</th><th>Attack Type</th><th>Truth</th><th>Detector</th><th>Zeek</th><th>Suricata</th></tr></thead>
+          <tbody>${attackRows || `<tr><td colspan="6" class="muted">No attack-type rows yet.</td></tr>`}</tbody>
+        </table>
+      </div>
+    `,
+    recent: `
+      <div class="db-table-wrap">
+        <table class="db-table">
+          <thead><tr><th>Run</th><th>Scenario</th><th>Mode</th><th>Loss</th><th>Truth</th><th>Sec</th><th>D</th><th>Z</th><th>S</th><th>Files</th></tr></thead>
+          <tbody>${recentRows || `<tr><td colspan="10" class="muted">No recent runs yet.</td></tr>`}</tbody>
+        </table>
+      </div>
+    `,
+  };
 
   container.innerHTML = `
-    <div class="tool-counters">
-      <div class="mini-metric">
-        <div class="label">runs</div>
-        <div class="value">${summary.total_runs ?? 0}</div>
-      </div>
-      <div class="mini-metric">
-        <div class="label">saved</div>
-        <div class="value">${summary.retained_runs ?? 0}</div>
-      </div>
-      <div class="mini-metric">
-        <div class="label">pcaps</div>
-        <div class="value">${summary.pcap_runs ?? 0}</div>
-      </div>
-    </div>
-    <div class="sensor-summary-grid">${sensorRows}</div>
-    <div class="db-scenario-list">${scenarioRows || `<div class="muted">No scenario rows yet.</div>`}</div>
+    <div class="inline-help">Live view of <code>${escapeHtml(summary.path || "results/experiment-results.sqlite")}</code>. It refreshes with the rest of the dashboard.</div>
+    <div class="db-tab-buttons" role="tablist" aria-label="Results database tables">${tabButtons}</div>
+    <div class="db-tab-panel">${tables[activeResultsDbTab] || tables.overview}</div>
   `;
+
+  container.querySelectorAll("[data-db-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      activeResultsDbTab = button.dataset.dbTab || "overview";
+      renderResultsDbSummary(summary);
+    });
+  });
 }
 
 function renderToolCard(toolKey, tool) {

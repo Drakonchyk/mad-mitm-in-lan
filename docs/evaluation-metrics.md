@@ -2,20 +2,18 @@
 
 This page defines the metrics used in the generated reports.
 
-## Detection Metrics
+## Detection And Reliability Metrics
 
 - `detected`
   - whether a run produced at least one relevant alert for the scenario
 - `time_to_first_alert`
   - delay between the alert and the timing basis used for comparison
-- `true_positive_rate`
-  - fraction of positive runs correctly detected
-- `false_positive_rate`
-  - fraction of negative runs that still produced alerts
-- `precision`
-  - fraction of positive predictions that were correct
-- `f1`
-  - harmonic mean of precision and recall
+- `event_recall`
+  - fraction of trusted attack events matched by a tool for comparable packet-visible evidence
+- `detection_survival`
+  - whether a tool still produces at least one relevant alert at a given NetEm loss level
+
+The lab baseline is a clean-sensor reference, not a representative production-traffic corpus. Generic classifier summaries that require broad benign traffic are better suited to future work with diverse real application traffic.
 
 ## Timing Basis
 
@@ -30,8 +28,8 @@ The report uses two timing notions:
 
 That means detector, Zeek, and Suricata are compared on a consistent basis even when their supported attack evidence differs.
 
-When packet capture is enabled, the observed-wire timing basis should prefer the raw switch-mirror capture on `pcap/sensor.pcap`. The detector's own JSON event stream is not treated as ground truth.
-When packet capture is disabled, trusted-source observations are materialized into `ground-truth/trusted-observations.sqlite`. The database is built from OVS snooping artifacts and records the trusted gateway/DNS/DHCP authorities, ARP/DNS/DHCP trust violations, and detector/Zeek/Suricata comparisons.
+Trusted-source observations are materialized into `ground-truth/trusted-observations.sqlite`. The database is built from OVS snooping artifacts and records the trusted gateway/DNS/DHCP authorities, ARP/DNS/DHCP trust violations, and detector/Zeek/Suricata comparisons.
+When packet capture is enabled, `pcap/sensor.pcap` remains useful for manual validation and screenshot work. The detector's own JSON event stream is not treated as ground truth.
 ARP truth is counted as gateway-IP ARP replies from non-gateway ports. DNS truth is counted as DNS replies claiming the trusted DNS/gateway source from non-gateway ports. DHCP truth is counted as DHCP server replies from non-gateway ports, even if the packet spoofs the gateway MAC/IP.
 Per-port captures in `pcap/ports/` remain optional port-scoped evidence for focused debugging.
 
@@ -44,12 +42,12 @@ Detector heartbeat events report packet-analysis throughput:
 - `avg_processing_ms`
 - `max_processing_ms`
 
-## Wire Truth Versus Alert Counts
+## Trusted Truth Versus Alert Counts
 
 Two count families appear in the generated outputs and they should not be read as the same thing:
 
-- `wire-truth attack events`
-  - matched attack packets extracted from the mirrored switch capture
+- trusted attack events
+  - normalized attack evidence derived from OVS trusted-source observations, scenario metadata, and optional packet validation
   - this is the preferred ground-truth basis for packet-level scenarios
 - sensor alert counts
   - detector packet alerts, Zeek notices, and Suricata alerts
@@ -72,13 +70,6 @@ Common packet-level detector alerts include:
 - `dhcp_binding_conflict_seen`
 
 Detector state transitions and narrative markers are still preserved in `detector.delta.jsonl`, but the main comparison path now focuses on packet-level detector evidence to stay closer to switch truth and comparator packet streams.
-
-## Recovery Metrics
-
-- `first_restored_ts`
-  - first restoration-related detector event after mitigation
-- `time_to_recovery`
-  - delay between `mitigation_started_at` and the first restoration event
 
 ## Operational Metrics
 

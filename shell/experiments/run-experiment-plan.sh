@@ -12,7 +12,6 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../experiment-common.sh"
 
 EXPERIMENT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-WARMUP_RUNS="${WARMUP_RUNS:-0}"
 MEASURED_RUNS="${MEASURED_RUNS:-${RUNS:-1}}"
 PLAN_SCENARIOS="${PLAN_SCENARIOS:-arp-poison-no-forward arp-mitm-forward arp-mitm-dns dhcp-spoof}"
 PCAP_ENABLE="${USER_PCAP_ENABLE:-0}"
@@ -44,8 +43,7 @@ Options:
   --start N                 Start from the Nth planned run window (1-based)
   --start-scenario NAME     Start when NAME is reached in PLAN_SCENARIOS
   --skip-scenario NAME      Exclude NAME from the planned scenarios (repeatable)
-  --runs N                  Measured runs per scenario (default: 1)
-  --warmups N               Warmup runs per scenario (default: 0)
+  --runs N                  Runs per scenario (default: 1)
   --help                    Show this help text
 EOF
 }
@@ -72,10 +70,6 @@ while [[ $# -gt 0 ]]; do
       MEASURED_RUNS="${2:?missing value for --runs}"
       shift 2
       ;;
-    --warmups|--warmup-runs)
-      WARMUP_RUNS="${2:?missing value for --warmups}"
-      shift 2
-      ;;
     --help|-h)
       usage
       exit 0
@@ -90,11 +84,10 @@ done
 
 if ! [[ "${PLAN_SKIP_RUNS}" =~ ^[0-9]+$ ]] \
   || ! [[ "${PLAN_START_RUN}" =~ ^[0-9]+$ ]] \
-  || ! [[ "${WARMUP_RUNS}" =~ ^[0-9]+$ ]] \
   || ! [[ "${MEASURED_RUNS}" =~ ^[0-9]+$ ]] \
   || (( PLAN_START_RUN < 1 )) \
   || (( MEASURED_RUNS < 1 )); then
-  warn "--skip and --warmups must be >= 0; --start and --runs must be >= 1"
+  warn "--skip must be >= 0; --start and --runs must be >= 1"
   exit 1
 fi
 
@@ -110,22 +103,20 @@ run_window() {
   local duration="$2"
   local note="$3"
   local run_index="$4"
-  local warmup="$5"
-  local attack_start_offset="$6"
-  local attack_stop_offset="$7"
-  local mitigation_offset="$8"
-  local forwarding_enabled="$9"
-  local dns_spoof_enabled="${10}"
-  local spoofed_domains="${11}"
-  local attack_cmd="${12}"
-  local aux_cmd="${13}"
-  local post_cleanup_host="${14:-}"
-  local post_cleanup_label="${15:-post-cleanup}"
-  local post_cleanup_cmd="${16:-}"
-  local post_cleanup_use_sudo="${17:-0}"
+  local attack_start_offset="$5"
+  local attack_stop_offset="$6"
+  local forwarding_enabled="$7"
+  local dns_spoof_enabled="$8"
+  local spoofed_domains="${9}"
+  local attack_cmd="${10}"
+  local aux_cmd="${11}"
+  local post_cleanup_host="${12:-}"
+  local post_cleanup_label="${13:-post-cleanup}"
+  local post_cleanup_cmd="${14:-}"
+  local post_cleanup_use_sudo="${15:-0}"
   local run_slug_suffix=""
 
-  info "Planned run: scenario=${scenario} run_index=${run_index} warmup=${warmup}"
+  info "Planned run: scenario=${scenario} run_index=${run_index}"
   SKIP_LAB_START="1" \
   ATTACK_JOB_HOST="${ATTACK_JOB_HOST_OVERRIDE:-attacker}" \
   ATTACK_JOB_LABEL="${scenario}" \
@@ -140,11 +131,9 @@ run_window() {
   POST_CLEANUP_CMD="${post_cleanup_cmd}" \
   POST_CLEANUP_USE_SUDO="${post_cleanup_use_sudo}" \
   PLAN_RUN_INDEX="${run_index}" \
-  PLAN_WARMUP="${warmup}" \
   PLAN_DURATION_SECONDS="${duration}" \
   PLAN_ATTACK_START_OFFSET_SECONDS="${attack_start_offset}" \
   PLAN_ATTACK_STOP_OFFSET_SECONDS="${attack_stop_offset}" \
-  PLAN_MITIGATION_START_OFFSET_SECONDS="${mitigation_offset}" \
   PLAN_FORWARDING_ENABLED="${forwarding_enabled}" \
   PLAN_DNS_SPOOF_ENABLED="${dns_spoof_enabled}" \
   PLAN_SPOOFED_DOMAINS="${spoofed_domains}" \
@@ -163,7 +152,6 @@ run_window() {
 run_scenario() {
   local scenario="$1"
   local run_index="$2"
-  local warmup="$3"
 
   case "${scenario}" in
     baseline)
@@ -172,8 +160,6 @@ run_scenario() {
         "20" \
         "Planned baseline run for the diploma experiment set" \
         "${run_index}" \
-        "${warmup}" \
-        "" \
         "" \
         "" \
         "0" \
@@ -188,10 +174,8 @@ run_scenario() {
         "30" \
         "Planned ARP poisoning without forwarding" \
         "${run_index}" \
-        "${warmup}" \
         "5" \
         "25" \
-        "" \
         "0" \
         "0" \
         "" \
@@ -204,10 +188,8 @@ run_scenario() {
         "30" \
         "Planned ARP MITM with forwarding enabled" \
         "${run_index}" \
-        "${warmup}" \
         "5" \
         "25" \
-        "" \
         "1" \
         "0" \
         "" \
@@ -220,10 +202,8 @@ run_scenario() {
         "45" \
         "Planned ARP MITM with forwarding plus focused DNS spoofing for iana.org" \
         "${run_index}" \
-        "${warmup}" \
         "5" \
         "35" \
-        "" \
         "1" \
         "1" \
         "iana.org" \
@@ -236,31 +216,13 @@ run_scenario() {
         "30" \
         "Planned rogue DHCP offer and ACK broadcast run" \
         "${run_index}" \
-        "${warmup}" \
         "5" \
         "25" \
-        "" \
         "0" \
         "0" \
         "" \
         "sleep 5; cd '${REMOTE_ROOT}' && exec timeout -s INT 20 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf dhcp-spoof --interface vnic0 --interval 1.0" \
         ""
-      ;;
-    mitigation-recovery)
-      run_window \
-        "mitigation-recovery" \
-        "60" \
-        "Planned mitigation and recovery run with ARP MITM plus DNS spoofing followed by victim-side restoration" \
-        "${run_index}" \
-        "${warmup}" \
-        "5" \
-        "30" \
-        "30" \
-        "1" \
-        "1" \
-        "iana.org" \
-        "sleep 5; cd '${REMOTE_ROOT}' && exec timeout -s INT 25 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --enable-forwarding --domains iana.org" \
-        "sleep 30; ip neigh replace '${GATEWAY_IP}' lladdr '${GATEWAY_LAB_MAC}' nud permanent dev vnic0"
       ;;
     *)
       warn "Unknown planned scenario: ${scenario}"
@@ -298,21 +260,13 @@ for scenario in ${PLAN_SCENARIOS}; do
     started=1
   fi
 
-  for ((run = 1; run <= WARMUP_RUNS; run++)); do
-    planned_run=$((planned_run + 1))
-    if (( planned_run < START_AT_RUN_INDEX )); then
-      info "Skipping planned run #${planned_run}: scenario=${scenario} run_index=${run} warmup=1"
-      continue
-    fi
-    run_scenario "${scenario}" "${run}" "1"
-  done
   for ((run = 1; run <= MEASURED_RUNS; run++)); do
     planned_run=$((planned_run + 1))
     if (( planned_run < START_AT_RUN_INDEX )); then
-      info "Skipping planned run #${planned_run}: scenario=${scenario} run_index=${run} warmup=0"
+      info "Skipping planned run #${planned_run}: scenario=${scenario} run_index=${run}"
       continue
     fi
-    run_scenario "${scenario}" "${run}" "0"
+    run_scenario "${scenario}" "${run}"
   done
 done
 

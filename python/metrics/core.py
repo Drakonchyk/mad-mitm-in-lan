@@ -435,7 +435,7 @@ def evaluate_single_run(run_dir: Path) -> RunEvaluation:
     attack_present = bool(relevant_attack_records) or meta.get("scenario") != "baseline"
 
     detector_coverage = dict(SENSOR_COVERAGE["detector"])
-    if not bool(meta.get("detector_ovs_dhcp_snooping_enabled", True)):
+    if not bool(meta.get("detector_ovs_dhcp_snooping_enabled", False)):
         detector_coverage["dhcp_untrusted_switch_port"] = False
     detector_result = load_detector_result(detector_records, attack_started_at, attack_first_seen_at, detector_coverage)
     zeek_result = load_zeek_result(run_dir, attack_started_at, attack_first_seen_at)

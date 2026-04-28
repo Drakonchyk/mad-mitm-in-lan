@@ -12,7 +12,11 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../experiment-common.sh"
 
 EXPERIMENT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FAMILIES="${FAMILIES:-arp-mitm-dns dhcp-spoof}"
-RELIABILITY_LOSS_LEVELS="${RELIABILITY_LOSS_LEVELS:-0 1 2 5 10 20}"
+LOSS_LEVELS_EXPLICIT=0
+if [[ -v RELIABILITY_LOSS_LEVELS ]]; then
+  LOSS_LEVELS_EXPLICIT=1
+fi
+RELIABILITY_LOSS_LEVELS="${RELIABILITY_LOSS_LEVELS:-0 10 20 30 40 50 60 70 80 90 100}"
 RELIABILITY_DHCP_ROGUE_ONLY="${RELIABILITY_DHCP_ROGUE_ONLY:-0}"
 RELIABILITY_DHCP_ROGUE_FOCUSED="${RELIABILITY_DHCP_ROGUE_FOCUSED:-${RELIABILITY_DHCP_ROGUE_ONLY}}"
 RELIABILITY_SENSOR_ATTACK_TYPE="${RELIABILITY_SENSOR_ATTACK_TYPE:-}"
@@ -51,7 +55,7 @@ Options:
 
 Environment:
   FAMILIES="arp-mitm-dns dhcp-spoof"
-  RELIABILITY_LOSS_LEVELS="0 1 2 5 10 20"
+  RELIABILITY_LOSS_LEVELS="0 10 20 30 40 50 60 70 80 90 100"
   RELIABILITY_DHCP_ROGUE_ONLY=0
   RELIABILITY_DHCP_ROGUE_FOCUSED=0
   RELIABILITY_SENSOR_ATTACK_TYPE=
@@ -79,7 +83,9 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --thesis|--both)
       FAMILIES="arp-mitm-dns dhcp-spoof"
-      RELIABILITY_LOSS_LEVELS="0 10 20 30 40 50 60 70 80 90 100"
+      if (( LOSS_LEVELS_EXPLICIT == 0 )); then
+        RELIABILITY_LOSS_LEVELS="0 10 20 30 40 50 60 70 80 90 100"
+      fi
       RELIABILITY_DHCP_ROGUE_FOCUSED="1"
       shift
       ;;
@@ -87,11 +93,14 @@ while [[ $# -gt 0 ]]; do
       RELIABILITY_DHCP_ROGUE_ONLY="1"
       RELIABILITY_DHCP_ROGUE_FOCUSED="1"
       FAMILIES="dhcp-spoof"
-      RELIABILITY_LOSS_LEVELS="0 10 20 30 40 50 60 70 80 90 100"
+      if (( LOSS_LEVELS_EXPLICIT == 0 )); then
+        RELIABILITY_LOSS_LEVELS="0 10 20 30 40 50 60 70 80 90 100"
+      fi
       shift
       ;;
     --loss-levels)
       RELIABILITY_LOSS_LEVELS="${2:?missing value for --loss-levels}"
+      LOSS_LEVELS_EXPLICIT=1
       shift 2
       ;;
     --runs)
@@ -224,7 +233,6 @@ run_reliability_family() {
   ATTACK_JOB_CMD="${attack_cmd}" \
   ATTACK_JOB_USE_SUDO="1" \
   PLAN_RUN_INDEX="${run_index}" \
-  PLAN_WARMUP="0" \
   PLAN_DURATION_SECONDS="${duration}" \
   PLAN_ATTACK_START_OFFSET_SECONDS="${attack_start}" \
   PLAN_ATTACK_STOP_OFFSET_SECONDS="${attack_stop}" \
@@ -240,7 +248,7 @@ run_reliability_family() {
   RELIABILITY_NETEM_REORDER_PERCENT="${RELIABILITY_REORDER_PERCENT}" \
   RELIABILITY_NETEM_CORRUPT_PERCENT="${RELIABILITY_CORRUPT_PERCENT}" \
   RELIABILITY_SENSOR_ATTACK_TYPE="$(reliability_family_attack_type_filter "${family}")" \
-  DETECTOR_OVS_DHCP_SNOOPING_ENABLE="$([[ "${family}" == "dhcp-spoof" && "${RELIABILITY_DHCP_ROGUE_FOCUSED}" == "1" ]] && printf '0' || printf '1')" \
+  DETECTOR_OVS_DHCP_SNOOPING_ENABLE="${DETECTOR_OVS_DHCP_SNOOPING_ENABLE:-0}" \
   PCAP_ENABLE="${PCAP_ENABLE}" \
   PORT_PCAP_ENABLE="${PORT_PCAP_ENABLE}" \
   GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE}" \

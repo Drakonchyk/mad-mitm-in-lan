@@ -73,15 +73,18 @@ flowchart LR
   - captures `pcap/ports/{gateway,victim,attacker}.pcap` from the individual OVS/libvirt port interfaces when `PORT_PCAP_ENABLE=1`
   - orchestrates scenario runs
   - collects artifacts into `results/`
-  - builds the main and supplementary reports
+  - builds the combined report
 - `mitm-gateway`:
   - provides the lab gateway, DNS service, and DHCP pool
   - is treated as the trusted DHCP server on the switch-facing LAN
   - remains the only DHCP-server-trusted ingress port for OVS DHCP snooping monitor/enforce flows
   - can produce gateway-side pcap when `PCAP_ENABLE=1`
 - Detector:
-  - reads OVS DHCP snooping monitor counters and emits `dhcp_reply_from_untrusted_switch_port_seen` when DHCP server replies arrive from non-gateway ports
-  - continues to inspect mirrored ARP, DNS, ICMP, and DHCP packets directly
+  - inspects mirrored ARP, DNS, ICMP, and DHCP packets directly
+  - is compared to Zeek and Suricata on the same packet-only observation surface
+- Trusted switch observation:
+  - records OVS DHCP/ARP/DNS trust evidence from ingress-port-aware monitor flows
+  - stays separate from Detector/Zeek/Suricata packet-alert counts
 - `mitm-victim`:
   - receives its lab address over DHCP from the gateway
 - `mitm-attacker`:

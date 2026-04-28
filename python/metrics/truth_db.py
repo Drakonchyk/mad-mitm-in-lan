@@ -214,7 +214,7 @@ def insert_switch_truth(connection: sqlite3.Connection, run_dir: Path, meta: dic
         )
         insert_observation(
             connection,
-            attack_type="dns_spoof",
+            attack_type="dns_source_violation",
             protocol="dns",
             event_name="untrusted_port_claimed_trusted_dns_source",
             observed_at=observed_at,

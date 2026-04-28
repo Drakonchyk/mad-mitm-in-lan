@@ -3,7 +3,6 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from metrics.primitives import confusion_from_binary
 from reporting.common import (
     TOOL_LABELS,
     TOOL_ORDER,
@@ -19,15 +18,17 @@ from scenarios.definitions import MAIN_SCENARIOS, SCENARIO_ATTACK_TYPES, SUPPLEM
 SCENARIO_ORDER_ALL = [*MAIN_SCENARIOS, *SUPPLEMENTARY_SCENARIOS]
 
 
-def _overall_confusion_lines(rows: list[dict[str, object]]) -> list[str]:
-    ground_truth = [bool(SCENARIO_ATTACK_TYPES.get(str(row["scenario"]))) for row in rows]
+def _overall_detection_lines(rows: list[dict[str, object]]) -> list[str]:
+    attack_rows = [row for row in rows if SCENARIO_ATTACK_TYPES.get(str(row["scenario"]))]
+    baseline_rows = [row for row in rows if str(row["scenario"]) == "baseline"]
     lines: list[str] = []
     for tool in TOOL_ORDER:
-        confusion = confusion_from_binary(ground_truth, [bool(row.get(f"{tool}_detected")) for row in rows])
+        attack_detected = sum(1 for row in attack_rows if bool(row.get(f"{tool}_detected")))
+        baseline_alerts = sum(1 for row in baseline_rows if int(row.get(tool_alert_field(tool)) or 0) > 0)
         lines.append(
-            f"- {TOOL_LABELS[tool]}: TP={confusion.tp}, FP={confusion.fp}, TN={confusion.tn}, FN={confusion.fn}, "
-            f"TPR={format_float(confusion.true_positive_rate())}, FPR={format_float(confusion.false_positive_rate())}, "
-            f"Precision={format_float(confusion.precision())}, F1={format_float(confusion.f1())}."
+            f"- {TOOL_LABELS[tool]}: attack runs with alerts={attack_detected}/{len(attack_rows)}, "
+            f"baseline runs with alerts={baseline_alerts}/{len(baseline_rows)}, "
+            f"mean attack-relative first-alert time={format_float(row_mean([attack_relative_ttd(row, tool) for row in attack_rows]))} s."
         )
     return lines
 
@@ -85,7 +86,7 @@ def write_markdown_summary(
         "## Scope",
         "",
         f"- Dataset scope: {profile}",
-        f"- Measured non-warmup runs included: {len(rows)}",
+        f"- Runs included: {len(rows)}",
         f"- Attack runs: {len(attack_rows)}",
         f"- Benign runs: {len(benign_rows)}",
     ]
@@ -109,8 +110,8 @@ def write_markdown_summary(
         ]
     )
 
-    lines.extend(["", "## Detection Summary", ""])
-    lines.extend(_overall_confusion_lines(rows))
+    lines.extend(["", "## Run-Level Detection Summary", ""])
+    lines.extend(_overall_detection_lines(rows))
 
     lines.extend(["", "## Figures", ""])
     if plots:

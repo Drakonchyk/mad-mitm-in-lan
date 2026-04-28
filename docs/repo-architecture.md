@@ -46,7 +46,6 @@ Experiment orchestration and timed recording:
 - `run-experiment-plan.sh`
 - `run-supplementary-plan.sh`
 - `run-reliability-plan.sh`
-- `run-overload-plan.sh`
 - `smoke-test.sh`
 
 ### `shell/scenarios/`
@@ -59,7 +58,6 @@ Direct automated scenario wrappers used for focused runs:
 - `record-dhcp-spoof.sh`
 - `record-reliability-arp-mitm-dns.sh`
 - `record-reliability-dhcp-spoof.sh`
-- `record-mitigation-recovery.sh`
 - `verify-isolated-lab.sh`
 - `compare-runs.sh`
 - `common.sh`
@@ -104,7 +102,7 @@ Run parsing and evaluation logic:
 - `run_artifacts.py`
   - generic loaders and per-run parsing helpers
 - `primitives.py`
-  - confusion-count helpers and reusable plotting primitives
+  - reusable metric and plotting primitives
 - `evaluator.py`
   - per-run evaluation, cache handling, and aggregate detection summaries
 - `summary_cli.py`
@@ -165,14 +163,14 @@ A typical full workflow looks like this:
 
 1. `make setup`
    - provisions networks, storage, guests, and cloud-init artifacts
-2. `make experiment-plan` or `make experiment-plan-extra`
+2. `make experiment-plan` or `make reliability RUNS=3`
    - runs timed scenario windows and stores artifacts under `results/`
 3. `make experiment-report`
    - builds dataset exports, figures, tables, and the markdown report from all retained runs
 4. `results/experiment-report/`
    - holds the generated outputs
 
-The generated markdown report now includes the main run-level confusion summary directly, so the normal analysis path does not depend on a separate top-level evaluation make target.
+The generated markdown report now includes run-level detection and timing summaries directly, so the normal analysis path does not depend on a separate top-level evaluation make target.
 
 ## Reading Order
 

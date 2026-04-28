@@ -48,7 +48,6 @@ SCENARIO_SCRIPTS = {
     "dhcp-spoof": REPO_ROOT / "shell/scenarios/record-dhcp-spoof.sh",
     "reliability-arp-mitm-dns": REPO_ROOT / "shell/scenarios/record-reliability-arp-mitm-dns.sh",
     "reliability-dhcp-spoof": REPO_ROOT / "shell/scenarios/record-reliability-dhcp-spoof.sh",
-    "mitigation-recovery": REPO_ROOT / "shell/scenarios/record-mitigation-recovery.sh",
 }
 
 DEMO_SCENARIOS = [
@@ -58,7 +57,6 @@ DEMO_SCENARIOS = [
     "dhcp-spoof",
     "reliability-arp-mitm-dns",
     "reliability-dhcp-spoof",
-    "mitigation-recovery",
 ]
 
 FEATURED_SCENARIOS = {"arp-mitm-dns", "dhcp-spoof", "reliability-arp-mitm-dns", "reliability-dhcp-spoof"}
@@ -69,7 +67,6 @@ DEFAULT_SCENARIO_DURATIONS = {
     "dhcp-spoof": 30,
     "reliability-arp-mitm-dns": 30,
     "reliability-dhcp-spoof": 20,
-    "mitigation-recovery": 60,
 }
 
 
@@ -385,7 +382,6 @@ def pretty_label(name: str) -> str:
         "dhcp-spoof": "DHCP Spoof",
         "reliability-arp-mitm-dns": "Reliability ARP + DNS",
         "reliability-dhcp-spoof": "Reliability DHCP Rogue",
-        "mitigation-recovery": "Mitigation Recovery",
     }
     return custom.get(name, name.replace("-", " ").title())
 
@@ -524,6 +520,9 @@ def results_db_summary() -> dict[str, Any]:
         "latest_started_at": None,
         "sensor_totals": {},
         "scenarios": [],
+        "loss_coverage": [],
+        "attack_types": [],
+        "recent_runs": [],
     }
     if not RESULTS_DB.exists():
         return empty
@@ -566,6 +565,70 @@ def results_db_summary() -> dict[str, Any]:
                 ORDER BY latest_started_at DESC, scenario
                 """
             ).fetchall()
+            loss_rows = db.execute(
+                """
+                SELECT scenario,
+                       reliability_loss_percent AS loss_percent,
+                       COUNT(*) AS run_count,
+                       AVG(detector_alert_events) AS detector_alerts_avg,
+                       AVG(zeek_alert_events) AS zeek_alerts_avg,
+                       AVG(suricata_alert_events) AS suricata_alerts_avg,
+                       AVG(detector_supported_ttd_seconds) AS detector_ttd_avg,
+                       AVG(zeek_supported_ttd_seconds) AS zeek_ttd_avg,
+                       AVG(suricata_supported_ttd_seconds) AS suricata_ttd_avg
+                FROM runs
+                WHERE reliability_loss_percent IS NOT NULL
+                GROUP BY scenario, reliability_loss_percent
+                ORDER BY scenario, reliability_loss_percent
+                """
+            ).fetchall()
+            attack_type_rows = db.execute(
+                """
+                WITH truth AS (
+                    SELECT run_id, attack_type, SUM(truth_count) AS truth_count
+                    FROM truth_counts
+                    GROUP BY run_id, attack_type
+                ),
+                sensors AS (
+                    SELECT run_id,
+                           attack_type,
+                           SUM(CASE WHEN sensor = 'detector' THEN alert_count ELSE 0 END) AS detector_count,
+                           SUM(CASE WHEN sensor = 'zeek' THEN alert_count ELSE 0 END) AS zeek_count,
+                           SUM(CASE WHEN sensor = 'suricata' THEN alert_count ELSE 0 END) AS suricata_count
+                    FROM sensor_counts
+                    GROUP BY run_id, attack_type
+                )
+                SELECT r.scenario,
+                       t.attack_type,
+                       SUM(t.truth_count) AS truth_count,
+                       SUM(COALESCE(s.detector_count, 0)) AS detector_count,
+                       SUM(COALESCE(s.zeek_count, 0)) AS zeek_count,
+                       SUM(COALESCE(s.suricata_count, 0)) AS suricata_count
+                FROM truth t
+                JOIN runs r ON r.run_id = t.run_id
+                LEFT JOIN sensors s ON s.run_id = t.run_id AND s.attack_type = t.attack_type
+                GROUP BY r.scenario, t.attack_type
+                ORDER BY MAX(r.started_at) DESC, r.scenario, t.attack_type
+                """
+            ).fetchall()
+            recent_rows = db.execute(
+                """
+                SELECT run_id,
+                       scenario,
+                       mode,
+                       started_at,
+                       duration_seconds,
+                       reliability_loss_percent,
+                       ground_truth_source,
+                       detector_alert_events,
+                       zeek_alert_events,
+                       suricata_alert_events,
+                       raw_artifacts_retained
+                FROM runs
+                ORDER BY started_at DESC, run_id DESC
+                LIMIT 20
+                """
+            ).fetchall()
     except sqlite3.Error:
         return empty
 
@@ -604,6 +667,50 @@ def results_db_summary() -> dict[str, Any]:
                     "latest_started_at": row["latest_started_at"],
                 }
                 for row in scenario_rows
+            ],
+            "loss_coverage": [
+                {
+                    "scenario": row["scenario"],
+                    "label": pretty_label(str(row["scenario"])),
+                    "loss_percent": row["loss_percent"],
+                    "run_count": int(row["run_count"] or 0),
+                    "detector_alerts_avg": row["detector_alerts_avg"],
+                    "zeek_alerts_avg": row["zeek_alerts_avg"],
+                    "suricata_alerts_avg": row["suricata_alerts_avg"],
+                    "detector_ttd_avg": row["detector_ttd_avg"],
+                    "zeek_ttd_avg": row["zeek_ttd_avg"],
+                    "suricata_ttd_avg": row["suricata_ttd_avg"],
+                }
+                for row in loss_rows
+            ],
+            "attack_types": [
+                {
+                    "scenario": row["scenario"],
+                    "label": pretty_label(str(row["scenario"])),
+                    "attack_type": row["attack_type"],
+                    "truth_count": int(row["truth_count"] or 0),
+                    "detector_count": int(row["detector_count"] or 0),
+                    "zeek_count": int(row["zeek_count"] or 0),
+                    "suricata_count": int(row["suricata_count"] or 0),
+                }
+                for row in attack_type_rows
+            ],
+            "recent_runs": [
+                {
+                    "run_id": row["run_id"],
+                    "scenario": row["scenario"],
+                    "label": pretty_label(str(row["scenario"])),
+                    "mode": row["mode"],
+                    "started_at": row["started_at"],
+                    "duration_seconds": row["duration_seconds"],
+                    "reliability_loss_percent": row["reliability_loss_percent"],
+                    "ground_truth_source": row["ground_truth_source"],
+                    "detector_alert_events": int(row["detector_alert_events"] or 0),
+                    "zeek_alert_events": int(row["zeek_alert_events"] or 0),
+                    "suricata_alert_events": int(row["suricata_alert_events"] or 0),
+                    "raw_artifacts_retained": int(row["raw_artifacts_retained"] or 0),
+                }
+                for row in recent_rows
             ],
         }
     )

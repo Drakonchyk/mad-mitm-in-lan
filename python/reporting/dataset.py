@@ -50,7 +50,7 @@ def limit_rows_per_scenario(rows: list[dict[str, Any]], max_runs_per_scenario: i
     return limited
 
 
-def build_rows(target: Path, include_warmups: bool, *, use_cache: bool = True, profile: str = "main") -> list[dict[str, Any]]:
+def build_rows(target: Path, *, use_cache: bool = True, profile: str = "main") -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     allowed_scenarios = set(selected_scenarios(profile))
     for run_dir in find_run_dirs(target):
@@ -61,9 +61,6 @@ def build_rows(target: Path, include_warmups: bool, *, use_cache: bool = True, p
         scenario = str(meta.get("scenario", run_dir.name))
         if scenario not in allowed_scenarios:
             continue
-        if bool(meta.get("warmup", False)) and not include_warmups:
-            continue
-
         evaluation = load_or_evaluate_single_run(run_dir, use_cache=use_cache)
         detector_records = load_jsonl(detector_delta_path(run_dir))
         detector_throughput = detector_throughput_summary(detector_records)
@@ -73,7 +70,6 @@ def build_rows(target: Path, include_warmups: bool, *, use_cache: bool = True, p
         spoofed_domains = {str(domain) for domain in meta.get("spoofed_domains", []) if domain}
         attack_start = parse_time(meta.get("attack_started_at"))
         attack_stop = parse_time(meta.get("attack_stopped_at"))
-        mitigation_start = parse_time(meta.get("mitigation_started_at"))
 
         detector_first_alert_at = first_record_timestamp(
             detector_records,
@@ -95,13 +91,6 @@ def build_rows(target: Path, include_warmups: bool, *, use_cache: bool = True, p
             stop=attack_stop,
             spoofed_domains=spoofed_domains or None,
         )
-        detector_first_recovery_at = first_record_timestamp(
-            detector_records,
-            RESTORATION_EVENTS,
-            start=mitigation_start,
-            spoofed_domains=spoofed_domains or None,
-        )
-
         probe_windows = parse_traffic_windows(
             run_dir / "victim" / "traffic-window.txt",
             gateway_ip=meta.get("gateway_lab_ip"),
@@ -125,13 +114,11 @@ def build_rows(target: Path, include_warmups: bool, *, use_cache: bool = True, p
             "run_id": str(meta.get("run_id", run_dir.name)),
             "run_dir": str(run_dir),
             "scenario": scenario,
-            "warmup": bool(meta.get("warmup", False)),
             "duration_seconds": meta.get("duration_seconds"),
             "started_at": meta.get("started_at"),
             "ended_at": meta.get("ended_at"),
             "attack_started_at": meta.get("attack_started_at"),
             "attack_stopped_at": meta.get("attack_stopped_at"),
-            "mitigation_started_at": meta.get("mitigation_started_at"),
             "forwarding_enabled": bool(meta.get("forwarding_enabled", False)),
             "dns_spoof_enabled": bool(meta.get("dns_spoof_enabled", False)),
             "spoofed_domains": sorted(spoofed_domains),
@@ -162,18 +149,15 @@ def build_rows(target: Path, include_warmups: bool, *, use_cache: bool = True, p
             "ground_truth_control_plane_packet_counts": dict(evaluation.ground_truth_control_plane_packet_counts),
             "detector_first_arp_alert_at": detector_first_arp_alert_at,
             "detector_first_dns_alert_at": detector_first_dns_alert_at,
-            "detector_first_recovery_at": detector_first_recovery_at,
             "detector_ttd_seconds": evaluation.detector_ttd_seconds,
             "detector_raw_ttd_seconds": evaluation.detector_ttd_seconds,
             "detector_arp_ttd_seconds": seconds_between(meta.get("started_at"), detector_first_arp_alert_at),
             "detector_dns_ttd_seconds": seconds_between(meta.get("started_at"), detector_first_dns_alert_at),
-            "detector_recovery_seconds": seconds_between(meta.get("mitigation_started_at"), detector_first_recovery_at),
             "detector_total_semantic_alerts": detector_total_semantic_alerts,
             "gateway_mac_changed": detector_counts.get("gateway_mac_changed", 0),
             "multiple_gateway_macs_seen": detector_counts.get("multiple_gateway_macs_seen", 0),
             "icmp_redirects_seen": detector_counts.get("icmp_redirects_seen", 0),
             "rogue_dhcp_server_seen": detector_counts.get("rogue_dhcp_server_seen", 0),
-            "dhcp_reply_from_untrusted_switch_port_seen": detector_counts.get("dhcp_reply_from_untrusted_switch_port_seen", 0),
             "dhcp_binding_conflict_seen": detector_counts.get("dhcp_binding_conflict_seen", 0),
             "domain_resolution_changed": count_detector_events(
                 detector_records,

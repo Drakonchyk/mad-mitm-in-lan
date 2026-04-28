@@ -387,7 +387,7 @@ prepare_victim_detector() {
   stderr_path="/tmp/mitm-lab-detector-host.stderr"
   detector_ovs_dhcp_bridge="${LAB_SWITCH_BRIDGE}"
   detector_ovs_dhcp_mode="$(dhcp_snooping_mode)"
-  if [[ "${DETECTOR_OVS_DHCP_SNOOPING_ENABLE:-1}" != "1" ]]; then
+  if [[ "${DETECTOR_OVS_DHCP_SNOOPING_ENABLE:-0}" != "1" ]]; then
     detector_ovs_dhcp_bridge=""
     detector_ovs_dhcp_mode="off"
   fi
@@ -934,9 +934,6 @@ should_keep_run_pcaps() {
       return 1
       ;;
     first-measured-per-scenario)
-      if [[ "${PLAN_WARMUP:-0}" == "1" ]]; then
-        return 1
-      fi
       if [[ -n "${PLAN_RUN_INDEX:-}" && "${PLAN_RUN_INDEX}" =~ ^[0-9]+$ && "${PLAN_RUN_INDEX}" -eq 1 ]]; then
         return 0
       fi
@@ -1085,20 +1082,17 @@ write_run_meta() {
   local started_at="$2"
   local ended_at="$3"
   local notes="${4:-}"
-  local run_index_json warmup_json duration_json attack_start_json attack_stop_json mitigation_start_json forwarding_json dns_spoof_json spoofed_domains_json port_pcap_roles_json overload_sources_json
+  local run_index_json duration_json attack_start_json attack_stop_json forwarding_json dns_spoof_json spoofed_domains_json port_pcap_roles_json
   local dhcp_snooping_mode_value dhcp_snooping_enforced_json
 
   run_index_json="$(json_number_or_null "${PLAN_RUN_INDEX:-}")"
-  warmup_json="$(json_bool "${PLAN_WARMUP:-0}")"
   duration_json="$(json_number_or_null "${PLAN_DURATION_SECONDS:-}")"
   attack_start_json="$(timestamp_at_offset_or_null "${started_at}" "${PLAN_ATTACK_START_OFFSET_SECONDS:-}")"
   attack_stop_json="$(timestamp_at_offset_or_null "${started_at}" "${PLAN_ATTACK_STOP_OFFSET_SECONDS:-}")"
-  mitigation_start_json="$(timestamp_at_offset_or_null "${started_at}" "${PLAN_MITIGATION_START_OFFSET_SECONDS:-}")"
   forwarding_json="$(json_bool "${PLAN_FORWARDING_ENABLED:-0}")"
   dns_spoof_json="$(json_bool "${PLAN_DNS_SPOOF_ENABLED:-0}")"
   spoofed_domains_json="$(json_string_array_from_words "${PLAN_SPOOFED_DOMAINS:-}")"
   port_pcap_roles_json="$(json_string_array_from_words "${PORT_PCAP_ROLES}")"
-  overload_sources_json="$(json_string_array_from_words "${OVERLOAD_SOURCES:-}")"
   dhcp_snooping_mode_value="$(dhcp_snooping_mode)"
   if [[ "${dhcp_snooping_mode_value}" == "enforce" ]]; then
     dhcp_snooping_enforced_json="true"
@@ -1144,21 +1138,10 @@ write_run_meta() {
   "traffic_probe_dns_interval_seconds": $(json_number_or_null "${TRAFFIC_PROBE_DNS_INTERVAL_SECONDS:-}"),
   "traffic_probe_packet_bytes": $(json_number_or_null "${TRAFFIC_PROBE_PACKET_BYTES:-}"),
   "traffic_probe_artifact": "victim/traffic-window.txt",
-  "overload_total_pps": $(json_number_or_null "${OVERLOAD_TOTAL_PPS:-}"),
-  "overload_pps_per_source": $(json_number_or_null "${OVERLOAD_PPS_PER_SOURCE:-}"),
-  "overload_traffic_seconds": $(json_number_or_null "${OVERLOAD_TRAFFIC_SECONDS:-}"),
-  "overload_packet_bytes": $(json_number_or_null "${OVERLOAD_PACKET_BYTES:-}"),
-  "overload_sources": ${overload_sources_json},
-  "overload_preset": "$(json_escape "${OVERLOAD_PRESET:-}")",
-  "overload_engine": "$(json_escape "${OVERLOAD_ENGINE:-}")",
-  "overload_workers": "$(json_escape "${OVERLOAD_WORKERS:-}")",
-  "overload_pps_per_worker": $(json_number_or_null "${OVERLOAD_PPS_PER_WORKER:-}"),
-  "overload_max_workers_per_source": $(json_number_or_null "${OVERLOAD_MAX_WORKERS_PER_SOURCE:-}"),
-  "overload_flood": $(json_bool "${OVERLOAD_FLOOD:-0}"),
   "ovs_dhcp_snooping_mode": "${dhcp_snooping_mode_value}",
   "ovs_dhcp_snooping_enforced": ${dhcp_snooping_enforced_json},
   "ovs_dhcp_snooping_artifact": "detector/ovs-dhcp-snooping.txt",
-  "detector_ovs_dhcp_snooping_enabled": $(json_bool "${DETECTOR_OVS_DHCP_SNOOPING_ENABLE:-1}"),
+  "detector_ovs_dhcp_snooping_enabled": $(json_bool "${DETECTOR_OVS_DHCP_SNOOPING_ENABLE:-0}"),
   "lab_switch_bridge": "${LAB_SWITCH_BRIDGE}",
   "lab_switch_mirror": "${LAB_SWITCH_MIRROR}",
   "gateway_upstream_ip": "$(gateway_upstream_ip)",
@@ -1169,11 +1152,9 @@ write_run_meta() {
   "attacker_ip": "$(lab_host_ip attacker)",
   "attacker_mac": "${ATTACKER_MAC}",
   "run_index": ${run_index_json},
-  "warmup": ${warmup_json},
   "duration_seconds": ${duration_json},
   "attack_started_at": ${attack_start_json},
   "attack_stopped_at": ${attack_stop_json},
-  "mitigation_started_at": ${mitigation_start_json},
   "forwarding_enabled": ${forwarding_json},
   "dns_spoof_enabled": ${dns_spoof_json},
   "spoofed_domains": ${spoofed_domains_json},

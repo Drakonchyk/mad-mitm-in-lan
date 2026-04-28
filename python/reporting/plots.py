@@ -26,7 +26,6 @@ from reporting.common import (
 from scenarios.definitions import MAIN_SCENARIOS, SCENARIO_ATTACK_TYPES, SUPPLEMENTARY_SCENARIOS
 
 SCENARIO_ORDER_ALL = [*MAIN_SCENARIOS, *SUPPLEMENTARY_SCENARIOS]
-PLOT_EXCLUDED_SCENARIO_PREFIXES = ("overload-",)
 TOOL_COLORS = {"detector": "#1d4ed8", "zeek": "#d97706", "suricata": "#0f766e"}
 SCENARIO_COLORS = {
     "baseline": "#94a3b8",
@@ -34,7 +33,6 @@ SCENARIO_COLORS = {
     "arp-mitm-forward": "#f97316",
     "arp-mitm-dns": "#2563eb",
     "dhcp-spoof": "#0f766e",
-    "mitigation-recovery": "#14b8a6",
     "reliability-arp-mitm-dns": "#be123c",
     "reliability-dhcp-spoof": "#0e7490",
 }
@@ -92,7 +90,7 @@ def _save(fig: Any, output_path: Path, plt: Any) -> Path:
 
 
 def _is_plotted_scenario(scenario: str) -> bool:
-    return not scenario.startswith(PLOT_EXCLUDED_SCENARIO_PREFIXES)
+    return bool(scenario)
 
 
 def _plot_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -126,7 +124,7 @@ def _mean_counter_value(rows: list[dict[str, Any]], field_name: str, key: str) -
 def _choose_representative_run(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     return representative_row(
         rows,
-        ["mitigation-recovery", "arp-mitm-dns", "arp-mitm-forward", "arp-poison-no-forward"],
+        ["arp-mitm-dns", "arp-mitm-forward", "arp-poison-no-forward"],
         lambda row: any(row.get(field) is not None for field in ["detector_first_alert_at_native", "zeek_first_alert_at", "suricata_first_alert_at"]),
     )
 
@@ -402,7 +400,6 @@ def _plot_detector_semantic_composition(rows: list[dict[str, Any]], output_dir: 
         ("rogue_dhcp_server_seen", "Rogue DHCP Server", "#0f766e"),
         ("dhcp_binding_conflict_seen", "DHCP Binding Conflict", "#10b981"),
         ("domain_resolution_changed", "Domain Resolution Changed", "#7c3aed"),
-        ("restoration_events", "Restoration Events", "#16a34a"),
     ]
     bottoms = np.zeros(len(scenarios))
     fig, ax = plt.subplots(figsize=(max(10, len(scenarios) * 1.2), 5.3))
@@ -525,17 +522,6 @@ def _plot_first_alert_winner_count(rows: list[dict[str, Any]], output_dir: Path,
     ax.set_ylabel("Attack runs where the tool was first")
     ax.set_title("First-Alert Winner Count")
     return _save(fig, output_dir / "figure-08-first-alert-winner-count.png", plt)
-
-
-def _plot_detector_recovery_timing(rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
-    values = [float(row["detector_recovery_seconds"]) for row in rows if row.get("detector_recovery_seconds") is not None]
-    if not values:
-        return None
-    fig, ax = plt.subplots(figsize=(6.5, 4.5))
-    ax.boxplot([values], labels=["mitigation-recovery"], patch_artist=True, showfliers=False)
-    ax.set_ylabel("Time to first restoration event (s)")
-    ax.set_title("Detector Recovery Timing")
-    return _save(fig, output_dir / "figure-09-detector-recovery-timing.png", plt)
 
 
 def _plot_operational_metrics(rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
@@ -766,7 +752,6 @@ def _plot_representative_timeline(rows: list[dict[str, Any]], output_dir: Path, 
         ("Detector", row.get("detector_first_alert_at_native"), TOOL_COLORS["detector"]),
         ("Zeek", row.get("zeek_first_alert_at"), TOOL_COLORS["zeek"]),
         ("Suricata", row.get("suricata_first_alert_at"), TOOL_COLORS["suricata"]),
-        ("Mitigation", row.get("mitigation_started_at"), "#0f766e"),
     ]:
         offset = seconds_between(row.get("started_at"), timestamp)
         if offset is None:
@@ -902,7 +887,6 @@ def _plot_mean_detector_semantic_counts(rows: list[dict[str, Any]], output_dir: 
         ("rogue_dhcp_server_seen", "Rogue DHCP Server", "#0f766e"),
         ("dhcp_binding_conflict_seen", "DHCP Binding Conflict", "#10b981"),
         ("domain_resolution_changed", "Domain Resolution Changed", "#7c3aed"),
-        ("restoration_events", "Restoration Events", "#16a34a"),
     ]
     labels = [SCENARIO_LABELS[scenario] for scenario in scenarios]
     positions = list(range(len(labels)))
@@ -980,36 +964,6 @@ def _plot_share_of_runs_with_events(rows: list[dict[str, Any]], output_dir: Path
             ax.text(col_index, row_index, f"{value:.0f}%", ha="center", va="center", fontsize=8)
     fig.colorbar(image, ax=ax, label="Share of runs (%)")
     return _save(fig, output_dir / "figure-21-share-of-runs-with-each-detector-event.png", plt)
-
-
-def _plot_restoration_ordering(rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
-    points = []
-    for row in rows:
-        if str(row["scenario"]) != "mitigation-recovery":
-            continue
-        records = load_jsonl(detector_delta_path(run_dir_for_row(row)))
-        gateway_restore = None
-        domain_restore = None
-        for record in records:
-            offset = seconds_between(row.get("started_at"), record.get("ts"))
-            if offset is None:
-                continue
-            if record.get("event") == "gateway_mac_restored" and gateway_restore is None:
-                gateway_restore = offset
-            if record.get("event") == "domain_resolution_restored" and domain_restore is None:
-                domain_restore = offset
-        if gateway_restore is not None and domain_restore is not None:
-            points.append((gateway_restore, domain_restore, str(row["run_id"])))
-    if not points:
-        return None
-    fig, ax = plt.subplots(figsize=(6.6, 5.0))
-    ax.scatter([x for x, _, _ in points], [y for _, y, _ in points], s=70, color="#16a34a", edgecolors="white", linewidths=0.45)
-    for x_value, y_value, run_id in points:
-        ax.annotate(run_id[-6:], (x_value, y_value), textcoords="offset points", xytext=(4, 4), fontsize=8)
-    ax.set_xlabel("Gateway restore offset (s)")
-    ax.set_ylabel("Domain restore offset (s)")
-    ax.set_title("Restoration Ordering In Mitigation Runs")
-    return _save(fig, output_dir / "figure-22-restoration-ordering-in-mitigation-runs.png", plt)
 
 
 def _plot_normalized_scenario_metric_profile(rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:

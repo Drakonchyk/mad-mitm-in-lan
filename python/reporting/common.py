@@ -36,7 +36,6 @@ COMPOSITION_SERIES = {
     "dhcp_reply_from_untrusted_switch_port_seen": "DHCP Reply From Untrusted Port",
     "dhcp_binding_conflict_seen": "DHCP Binding Conflict",
     "domain_resolution_changed": "Domain Resolution Changed",
-    "restoration_events": "Restoration Events",
 }
 
 TOOL_LABELS = {
@@ -151,9 +150,7 @@ def detector_marker_offsets(row: dict[str, Any]) -> list[tuple[str, float]]:
         ("Attack start", row.get("attack_started_at")),
         ("First detector alert", row.get("detector_first_alert_at")),
         ("First DNS alert", row.get("detector_first_dns_alert_at")),
-        ("Mitigation", row.get("mitigation_started_at")),
         ("Attack stop", row.get("attack_stopped_at")),
-        ("Recovery", row.get("detector_first_recovery_at")),
     ]:
         offset = seconds_between(row.get("started_at"), timestamp)
         if offset is not None:
@@ -179,7 +176,6 @@ def detector_alert_composition_totals(rows: list[dict[str, Any]]) -> dict[str, f
         "Multiple Gateway MACs": float(sum(row["multiple_gateway_macs_seen"] for row in rows)),
         "ICMP Redirects": float(sum(row["icmp_redirects_seen"] for row in rows)),
         "Domain Resolution Changed": float(sum(row["domain_resolution_changed"] for row in rows)),
-        "Restoration Events": float(sum(row["restoration_events"] for row in rows)),
     }
 
 

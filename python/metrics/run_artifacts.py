@@ -35,7 +35,6 @@ DETECTOR_PACKET_ALERT_EVENTS = {
     "dns_spoof_packet_seen",
     "rogue_dhcp_server_seen",
     "dhcp_binding_conflict_seen",
-    "dhcp_reply_from_untrusted_switch_port_seen",
 }
 
 

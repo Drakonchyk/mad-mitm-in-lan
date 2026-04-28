@@ -11,7 +11,6 @@ from reporting.tables import (
     build_table_thesis_detector_semantics,
     build_table_thesis_main_detection,
     build_table_thesis_reliability_thresholds,
-    build_table_thesis_recovery_timing,
     build_table_thesis_supplementary_detection,
 )
 
@@ -20,7 +19,6 @@ from reporting.tables import (
 class ReportBuildOptions:
     target: Path
     output_dir: Path
-    include_warmups: bool = False
     use_cache: bool = True
     profile: str = "all"
     max_runs_per_scenario: int | None = None
@@ -33,7 +31,6 @@ class ExperimentReportBuilder:
     def load_rows(self) -> list[dict[str, Any]]:
         rows = build_rows(
             self.options.target,
-            include_warmups=self.options.include_warmups,
             use_cache=self.options.use_cache,
             profile=self.options.profile,
         )
@@ -55,7 +52,6 @@ class ExperimentReportBuilder:
             ("Thesis Tables / Supplementary Campaign Summary", build_table_thesis_supplementary_detection),
             ("Thesis Tables / Detector Semantic Coverage", build_table_thesis_detector_semantics),
             ("Thesis Tables / Reliability Thresholds", build_table_thesis_reliability_thresholds),
-            ("Thesis Tables / Recovery Timing", build_table_thesis_recovery_timing),
         ]
         tables: dict[str, Path] = {}
         for title, builder in builders:

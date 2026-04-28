@@ -454,6 +454,12 @@ def observed_wire_attack_records(run_dir: Path, meta: dict[str, Any]) -> list[di
         except ValueError:
             continue
         records.append({"event": "dns_spoof_observed", "ts": ts})
+    for value in epochs_by_type.get("dns_source_violation", []):
+        try:
+            ts = datetime.fromtimestamp(float(value), timezone.utc).isoformat()
+        except ValueError:
+            continue
+        records.append({"event": "dns_source_violation_observed", "ts": ts})
     for value in epochs_by_type.get("icmp_redirect", []):
         try:
             ts = datetime.fromtimestamp(float(value), timezone.utc).isoformat()

@@ -53,20 +53,8 @@ SCENARIOS: dict[str, ScenarioDefinition] = {
         detector_events=frozenset({
             "rogue_dhcp_server_seen",
             "dhcp_binding_conflict_seen",
-            "dhcp_reply_from_untrusted_switch_port_seen",
         }),
         attack_types=frozenset({"dhcp_rogue_server", "dhcp_untrusted_switch_port"}),
-    ),
-    "mitigation-recovery": ScenarioDefinition(
-        name="mitigation-recovery",
-        group="main",
-        label="mitigation-recovery",
-        detector_events=frozenset({
-            "gateway_mac_changed",
-            "multiple_gateway_macs_seen",
-            "domain_resolution_changed",
-        }),
-        attack_types=frozenset({"arp_spoof", "dns_spoof"}),
     ),
     "reliability-arp-mitm-dns": ScenarioDefinition(
         name="reliability-arp-mitm-dns",
@@ -86,29 +74,6 @@ SCENARIOS: dict[str, ScenarioDefinition] = {
         detector_events=frozenset({
             "rogue_dhcp_server_seen",
             "dhcp_binding_conflict_seen",
-            "dhcp_reply_from_untrusted_switch_port_seen",
-        }),
-        attack_types=frozenset({"dhcp_rogue_server", "dhcp_untrusted_switch_port"}),
-    ),
-    "overload-arp-mitm-dns": ScenarioDefinition(
-        name="overload-arp-mitm-dns",
-        group="supplementary",
-        label="overload-arp-mitm-dns",
-        detector_events=frozenset({
-            "gateway_mac_changed",
-            "multiple_gateway_macs_seen",
-            "domain_resolution_changed",
-        }),
-        attack_types=frozenset({"arp_spoof", "dns_spoof"}),
-    ),
-    "overload-dhcp-spoof": ScenarioDefinition(
-        name="overload-dhcp-spoof",
-        group="supplementary",
-        label="overload-dhcp-spoof",
-        detector_events=frozenset({
-            "rogue_dhcp_server_seen",
-            "dhcp_binding_conflict_seen",
-            "dhcp_reply_from_untrusted_switch_port_seen",
         }),
         attack_types=frozenset({"dhcp_rogue_server", "dhcp_untrusted_switch_port"}),
     ),

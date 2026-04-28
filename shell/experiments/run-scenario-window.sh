@@ -274,7 +274,7 @@ if [[ -n "${POST_CLEANUP_CMD}" ]]; then
 fi
 
 if [[ "${POST_ATTACK_SETTLE_SECONDS}" -gt 0 ]]; then
-  info "Running post-window victim probe and waiting ${POST_ATTACK_SETTLE_SECONDS}s for detector recovery logs"
+  info "Running post-window victim probe and waiting ${POST_ATTACK_SETTLE_SECONDS}s for detector settle logs"
   sleep "${POST_ATTACK_SETTLE_SECONDS}"
   LAB_SSH_CONNECT_TIMEOUT="${POST_WINDOW_PROBE_SSH_CONNECT_TIMEOUT}" \
   capture_remote_command_retry victim "${RUN_DIR}/victim/post-window-probe.txt" \

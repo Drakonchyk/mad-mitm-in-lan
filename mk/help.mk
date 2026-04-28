@@ -19,12 +19,8 @@ help:
 		'  make results-db Rebuild results/experiment-results.sqlite from retained run files' \
 		'  make results-db-overview' \
 		'                 Print the newest rows from the compact results DB' \
-		'  make overload-summary' \
-		'                 Estimate detector packet-rate ceiling from overload runs' \
 		'  make experiment-plan ARGS="--skip 2 --skip-scenario arp-mitm-forward"' \
 		'                 Run the main diploma experiment plan with optional skip/start controls' \
-		'  make experiment-plan-extra ARGS="--skip 1"' \
-		'                 Run supplementary scenarios separately from the main thesis dataset' \
 		'  make reliability RUNS=3' \
 		'                 Run thesis reliability: ARP/DNS plus focused DHCP rogue-server, loss 0%..100%' \
 		'  make reliability-plan' \
@@ -33,16 +29,8 @@ help:
 		'                 Run ARP/DNS plus focused DHCP rogue-server reliability, loss 0%..100%' \
 		'  make reliability-dhcp-rogue-plan' \
 		'                 Compare Detector, Zeek, and Suricata on DHCP rogue-server packet loss from 0% to 100%' \
-		'  make overload-plan' \
-		'                 Run short detector packet-rate overload campaigns with per-port truth captures' \
-		'  make overload-plan-huge' \
-		'                 Run stepped high-rate overload campaigns: 1k through 100k requested pps' \
-		'  make overload-plan-blast' \
-		'                 Run flood-mode overload campaigns at the guests maximum send rate' \
 		'  make experiment-report' \
 		'                 Build one combined report from all runs under results/' \
-		'  make experiment-report-extra' \
-		'                 Compatibility alias for make experiment-report' \
 		'  make demo-ui PORT=8765' \
 		'                 Open the localhost thesis demo dashboard with live status, logs, and scenario buttons' \
 		'  make scenario-verify' \
@@ -59,8 +47,6 @@ help:
 		'                 Run ARP/DNS attack through the NetEm reliability path' \
 		'  make scenario-reliability-dhcp-spoof LOSS=5' \
 		'                 Run rogue DHCP through the NetEm reliability path' \
-		'  make scenario-mitigation-recovery DURATION=60' \
-		'                 Run automated mitigation and recovery' \
 		'  make setup      Run the full setup flow' \
 		'  make destroy    Tear down the lab and remove generated artifacts' \
 		'  make rebuild    Destroy and recreate the full lab'

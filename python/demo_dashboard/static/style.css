@@ -303,6 +303,83 @@ h1 {
   overflow: auto;
 }
 
+.results-db-panel {
+  margin-bottom: 20px;
+}
+
+.db-tab-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+button.db-tab-button {
+  padding: 9px 12px;
+  border-radius: 12px;
+  color: var(--ink);
+  background: var(--paper-strong);
+  border: 1px solid var(--line);
+  box-shadow: none;
+}
+
+button.db-tab-button.active {
+  color: #fffdf9;
+  background: linear-gradient(135deg, var(--accent-2), #275f5d);
+}
+
+.db-tab-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.db-topline {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.db-table-wrap {
+  width: 100%;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--paper-strong);
+}
+
+.db-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 820px;
+  font-size: 0.88rem;
+}
+
+.db-table th,
+.db-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.db-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #fff7ea;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.db-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.db-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .scenario-summary-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -439,6 +516,7 @@ code {
   .hero-actions,
   .duration-row,
   .tool-counters,
+  .db-topline,
   .sensor-summary-grid {
     grid-template-columns: 1fr;
   }

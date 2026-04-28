@@ -1,4 +1,4 @@
-.PHONY: scenario-verify scenario-arp-poison-no-forward scenario-arp-mitm-forward scenario-arp-mitm-dns scenario-dhcp-spoof scenario-reliability-arp-mitm-dns scenario-reliability-dhcp-spoof scenario-mitigation-recovery
+.PHONY: scenario-verify scenario-arp-poison-no-forward scenario-arp-mitm-forward scenario-arp-mitm-dns scenario-dhcp-spoof scenario-reliability-arp-mitm-dns scenario-reliability-dhcp-spoof
 
 scenario-verify:
 	./shell/scenarios/verify-isolated-lab.sh
@@ -20,6 +20,3 @@ scenario-reliability-arp-mitm-dns:
 
 scenario-reliability-dhcp-spoof:
 	./shell/scenarios/record-reliability-dhcp-spoof.sh "$(or $(DURATION),20)" "$(or $(LOSS),0)"
-
-scenario-mitigation-recovery:
-	./shell/scenarios/record-mitigation-recovery.sh "$(or $(DURATION),60)"

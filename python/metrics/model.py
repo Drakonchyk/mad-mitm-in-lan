@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-EVALUATION_CACHE_VERSION = 20
+EVALUATION_CACHE_VERSION = 22
 EVALUATION_DEPENDENCY_PATHS = [
     Path(__file__).resolve(),
     Path(__file__).resolve().with_name("core.py"),
@@ -17,6 +17,7 @@ ATTACK_TYPE_ORDER = [
     "arp_spoof",
     "icmp_redirect",
     "dns_spoof",
+    "dns_source_violation",
     "dhcp_spoof",
     "dhcp_rogue_server",
     "dhcp_untrusted_switch_port",
@@ -26,6 +27,7 @@ ATTACK_TYPE_LABELS = {
     "arp_spoof": "ARP spoof",
     "icmp_redirect": "ICMP redirect",
     "dns_spoof": "DNS spoof",
+    "dns_source_violation": "DNS reply from untrusted switch port",
     "dhcp_spoof": "DHCP spoof",
     "dhcp_rogue_server": "DHCP rogue server identity",
     "dhcp_untrusted_switch_port": "DHCP reply from untrusted switch port",
@@ -37,6 +39,7 @@ GROUND_TRUTH_ATTACK_EVENTS = {
     "icmp_redirect_observed": "icmp_redirect",
     "dns_spoof": "dns_spoof",
     "dns_spoof_observed": "dns_spoof",
+    "dns_source_violation_observed": "dns_source_violation",
     "rogue_dhcp_offer": "dhcp_rogue_server",
     "rogue_dhcp_ack": "dhcp_rogue_server",
     "rogue_dhcp_server_observed": "dhcp_rogue_server",
@@ -48,7 +51,6 @@ DETECTOR_ALERT_EVENTS = {
     "icmp_redirect_packet_seen": "icmp_redirect",
     "dns_spoof_packet_seen": "dns_spoof",
     "rogue_dhcp_server_seen": "dhcp_rogue_server",
-    "dhcp_reply_from_untrusted_switch_port_seen": "dhcp_untrusted_switch_port",
 }
 
 ZEEK_ALERT_TYPES = {
@@ -72,14 +74,16 @@ SENSOR_COVERAGE = {
         "arp_spoof": True,
         "icmp_redirect": True,
         "dns_spoof": True,
+        "dns_source_violation": False,
         "dhcp_spoof": True,
         "dhcp_rogue_server": True,
-        "dhcp_untrusted_switch_port": True,
+        "dhcp_untrusted_switch_port": False,
     },
     "zeek": {
         "arp_spoof": True,
         "icmp_redirect": True,
         "dns_spoof": True,
+        "dns_source_violation": False,
         "dhcp_spoof": True,
         "dhcp_rogue_server": True,
         "dhcp_untrusted_switch_port": False,
@@ -88,6 +92,7 @@ SENSOR_COVERAGE = {
         "arp_spoof": False,
         "icmp_redirect": True,
         "dns_spoof": True,
+        "dns_source_violation": False,
         "dhcp_spoof": True,
         "dhcp_rogue_server": True,
         "dhcp_untrusted_switch_port": False,

@@ -23,10 +23,7 @@ from metrics.run_artifacts import (
     parse_synthetic_traffic_summary,
     parse_traffic_windows,
     suricata_eve_path,
-    suricata_throughput_summary,
     zeek_notice_path,
-    zeek_stats_path,
-    zeek_throughput_summary,
 )
 from metrics.truth_db import trusted_observation_counts, truth_db_path
 
@@ -143,8 +140,6 @@ def summarize_run(run_dir: Path) -> dict[str, str]:
     detector_total, detector_packet_alerts, detector_semantic_alerts, detector_total_alerts = count_detector_events(detector_delta_path(run_dir))
     detector_records = load_jsonl(detector_delta_path(run_dir))
     detector_throughput = detector_throughput_summary(detector_records)
-    zeek_throughput = zeek_throughput_summary(zeek_stats_path(run_dir))
-    suricata_throughput = suricata_throughput_summary(suricata_eve_path(run_dir))
     mode = meta.get("mode", "-")
     probe_windows = parse_traffic_windows(
         run_dir / "victim" / "traffic-window.txt",
@@ -193,15 +188,7 @@ def summarize_run(run_dir: Path) -> dict[str, str]:
         "detector_packets_seen": str(detector_throughput.get("packets_seen", "-")),
         "detector_packets_processed": str(detector_throughput.get("packets_processed", "-")),
         "zeek_alerts": count_zeek_notices(zeek_notice_path(run_dir)),
-        "zeek_max_seen_pps": format_metric(zeek_throughput.get("max_interval_seen_pps")),
-        "zeek_max_processed_pps": format_metric(zeek_throughput.get("max_interval_processed_pps")),
-        "zeek_packets_seen": str(zeek_throughput.get("packets_seen", "-")),
-        "zeek_packets_processed": str(zeek_throughput.get("packets_processed", "-")),
         "suricata_alerts": count_suricata_alerts(suricata_eve_path(run_dir), meta),
-        "suricata_max_seen_pps": format_metric(suricata_throughput.get("max_interval_seen_pps")),
-        "suricata_max_processed_pps": format_metric(suricata_throughput.get("max_interval_processed_pps")),
-        "suricata_packets_seen": str(suricata_throughput.get("packets_seen", "-")),
-        "suricata_packets_processed": str(suricata_throughput.get("packets_processed", "-")),
         "suricata_arp_rule_enabled": "yes" if meta.get("suricata_arp_rule_enabled") else "no",
         "suricata_arp_rule_note": meta.get("suricata_arp_rule_note", ""),
         "suricata_arp_detected": "yes" if (evaluation.get("suricata_attack_type_counts", {}) or {}).get("arp_spoof", 0) > 0 else "no",
@@ -261,19 +248,7 @@ def print_single(summary: dict[str, str]) -> None:
         f"(packets={summary['detector_packets_processed']}/{summary['detector_packets_seen']})"
     )
     print(f"Zeek notices: {summary['zeek_alerts']}")
-    print(
-        "Zeek throughput: "
-        f"seen={summary['zeek_max_seen_pps']} pps, "
-        f"processed={summary['zeek_max_processed_pps']} pps "
-        f"(packets={summary['zeek_packets_processed']}/{summary['zeek_packets_seen']})"
-    )
     print(f"Suricata alerts: {summary['suricata_alerts']}")
-    print(
-        "Suricata throughput: "
-        f"seen={summary['suricata_max_seen_pps']} pps, "
-        f"processed={summary['suricata_max_processed_pps']} pps "
-        f"(packets={summary['suricata_packets_processed']}/{summary['suricata_packets_seen']})"
-    )
     print(
         "OVS DHCP replies from untrusted ports: "
         f"{summary['ovs_dhcp_snooping_packets']} "
@@ -301,8 +276,6 @@ def print_table(summaries: list[dict[str, str]]) -> None:
         "detector_alerts",
         "detector_max_seen_pps",
         "detector_max_processed_pps",
-        "zeek_max_processed_pps",
-        "suricata_max_processed_pps",
         "ovs_dhcp_snooping_packets",
         "ovs_switch_truth_packets",
         "trusted_ground_truth_db_counts",
@@ -325,8 +298,6 @@ def print_db_table(db_path: Path) -> None:
         "zeek_alert_events",
         "suricata_alert_events",
         "detector_max_processed_pps",
-        "zeek_max_processed_pps",
-        "suricata_max_processed_pps",
         "run_dir",
     ]
     with sqlite3.connect(db_path) as connection:
@@ -334,8 +305,7 @@ def print_db_table(db_path: Path) -> None:
             """
             SELECT run_id, scenario, ground_truth_source, detector_alert_events,
                    zeek_alert_events, suricata_alert_events,
-                   detector_max_processed_pps, zeek_max_processed_pps,
-                   suricata_max_processed_pps, run_dir
+                   detector_max_processed_pps, run_dir
             FROM run_overview
             ORDER BY started_at DESC, run_id DESC
             """

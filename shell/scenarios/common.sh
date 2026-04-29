@@ -48,6 +48,28 @@ verify_isolated_lab() {
   scenario_info "Attacker lab IP: ${expected_attacker}"
 }
 
+resolve_scenario_command_placeholders() {
+  local cmd="$1"
+  local victim_ip attacker_ip
+
+  victim_ip="$(lab_host_ip victim 2>/dev/null || true)"
+  attacker_ip="$(lab_host_ip attacker 2>/dev/null || true)"
+
+  if [[ "${cmd}" == *"__VICTIM_IP__"* && -z "${victim_ip}" ]]; then
+    warn "Could not resolve victim IP for scenario command"
+    exit 1
+  fi
+  if [[ "${cmd}" == *"__ATTACKER_IP__"* && -z "${attacker_ip}" ]]; then
+    warn "Could not resolve attacker IP for scenario command"
+    exit 1
+  fi
+
+  cmd="${cmd//__VICTIM_IP__/${victim_ip}}"
+  cmd="${cmd//__ATTACKER_IP__/${attacker_ip}}"
+  cmd="${cmd//__GATEWAY_IP__/${GATEWAY_IP}}"
+  printf '%s\n' "${cmd}"
+}
+
 run_automated_scenario_recording() {
   local scenario_name="$1"
   local duration="$2"
@@ -58,6 +80,7 @@ run_automated_scenario_recording() {
   start_lab_and_wait_for_access
   verify_isolated_lab
   prepare_attacker_research_workspace
+  attack_cmd="$(resolve_scenario_command_placeholders "${attack_cmd}")"
 
   scenario_info "Automated attacker command: ${attack_cmd}"
   SKIP_LAB_START="1" \
@@ -70,6 +93,7 @@ run_automated_scenario_recording() {
 	  GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE:-0}" \
   PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE:-0}" \
   PCAP_RETENTION_POLICY="${PCAP_RETENTION_POLICY:-all}" \
+  DEBUG_ARTIFACTS_ENABLED="${DEBUG_ARTIFACTS_ENABLED:-0}" \
   IPERF_ENABLE="${IPERF_ENABLE:-0}" \
 	  POST_ATTACK_SETTLE_SECONDS="${POST_ATTACK_SETTLE_SECONDS:-0}" \
 	  RUN_SUMMARY_ENABLE="${RUN_SUMMARY_ENABLE:-1}" \

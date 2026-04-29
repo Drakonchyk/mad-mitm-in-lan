@@ -12,9 +12,6 @@
         <div>
           <p class="eyebrow">MAD MITM Thesis Demo</p>
           <h1>Live Lab Control Room</h1>
-          <p class="hero-copy">
-            Launch scenarios, watch detector health, and tail Zeek, Suricata, and detector events from one localhost page.
-          </p>
         </div>
         <div class="hero-actions">
           <button class="secondary" data-action="start_lab">Ensure Lab Up</button>
@@ -27,7 +24,6 @@
       <section class="panel control-panel">
         <div class="control-copy">
           <h2>Scenario Launcher</h2>
-          <p>Pick a scenario and run one focused window. For the full packet-loss campaign use <code>make reliability RUNS=3</code>.</p>
         </div>
         <div class="duration-box">
           <label for="durationRange">Duration</label>
@@ -40,7 +36,7 @@
           <label>Reliability Scenario</label>
           <div class="radio-row" role="radiogroup" aria-label="Reliability scenario">
             <label><input type="radio" name="reliabilityScenario" value="reliability-arp-mitm-dns" checked> ARP + DNS</label>
-            <label><input type="radio" name="reliabilityScenario" value="reliability-dhcp-spoof"> DHCP rogue</label>
+            <label><input type="radio" name="reliabilityScenario" value="reliability-dhcp-spoof"> DHCP</label>
           </div>
           <label for="reliabilityRange">Packet Loss (%)</label>
           <div class="duration-row">
@@ -52,7 +48,6 @@
           <input id="debugArtifacts" type="checkbox">
           Keep debug artifacts and pcaps for this run
         </label>
-        <div class="inline-help">Debug runs retain raw files under <code>results/</code> so the Save Run button can package them.</div>
         <div id="scenarioButtons" class="scenario-grid"></div>
         <button id="runSelectedScenario" class="run-button" disabled>Run Selected Scenario</button>
       </section>
@@ -73,7 +68,7 @@
         </article>
         <article class="panel">
           <div class="panel-header">
-            <h2>Last Completed Run</h2>
+            <h2>Current / Last Run</h2>
             <button id="downloadLatestRun" class="small-action" disabled>Save Run</button>
           </div>
           <div id="latestResult" class="stack compact"></div>
@@ -127,9 +122,6 @@
         <div id="resultsDbSummary" class="stack compact"></div>
       </section>
 
-      <section class="panel footer-panel">
-        <div id="messageBar" class="message muted">Start the dashboard with <code>make demo-ui</code>, then use the browser controls for the live demo.</div>
-      </section>
     </div>
 
     <script src="/app.js"></script>

@@ -11,7 +11,6 @@ from reporting.tables import (
     build_table_thesis_detector_semantics,
     build_table_thesis_main_detection,
     build_table_thesis_reliability_thresholds,
-    build_table_thesis_supplementary_detection,
 )
 
 
@@ -48,8 +47,7 @@ class ExperimentReportBuilder:
 
     def build_tables(self, rows: list[dict[str, Any]]) -> dict[str, Path]:
         builders = [
-            ("Thesis Tables / Main Detection And Timing", build_table_thesis_main_detection),
-            ("Thesis Tables / Supplementary Campaign Summary", build_table_thesis_supplementary_detection),
+            ("Thesis Tables / Main Detection", build_table_thesis_main_detection),
             ("Thesis Tables / Detector Semantic Coverage", build_table_thesis_detector_semantics),
             ("Thesis Tables / Reliability Thresholds", build_table_thesis_reliability_thresholds),
         ]

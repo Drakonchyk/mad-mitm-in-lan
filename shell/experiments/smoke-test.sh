@@ -8,13 +8,13 @@ EXPERIMENT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SMOKE_DURATION_SECONDS="${SMOKE_DURATION_SECONDS:-30}"
 SMOKE_CAPTURE_PACKET_COUNT="${SMOKE_CAPTURE_PACKET_COUNT:-0}"
-SMOKE_KEEP_DEBUG_ARTIFACTS="${SMOKE_KEEP_DEBUG_ARTIFACTS:-1}"
+SMOKE_DEBUG="${SMOKE_DEBUG:-1}"
 SMOKE_IPERF_ENABLE="${SMOKE_IPERF_ENABLE:-0}"
 REMOTE_ROOT="$(research_workspace_root)"
 
-if (( SMOKE_DURATION_SECONDS < 8 )); then
-  warn "SMOKE_DURATION_SECONDS=${SMOKE_DURATION_SECONDS} is too short for reliable attack validation; using 8s instead"
-  SMOKE_DURATION_SECONDS=8
+if (( SMOKE_DURATION_SECONDS < 12 )); then
+  warn "SMOKE_DURATION_SECONDS=${SMOKE_DURATION_SECONDS} is too short for reliable attack validation; using 12s instead"
+  SMOKE_DURATION_SECONDS=12
 fi
 
 run_short_recording() {
@@ -25,7 +25,9 @@ run_short_recording() {
   local plan_forwarding_enabled="${5:-0}"
   local plan_dns_spoof_enabled="${6:-0}"
   local plan_spoofed_domains="${7:-}"
+  local attack_stop
 
+  attack_stop=$((SMOKE_DURATION_SECONDS - 5))
   info "Running smoke scenario '${scenario_name}' for ${SMOKE_DURATION_SECONDS}s"
   SKIP_LAB_START="1" \
   ATTACK_JOB_HOST="attacker" \
@@ -33,11 +35,13 @@ run_short_recording() {
   ATTACK_JOB_CMD="${attack_cmd}" \
   ATTACK_JOB_USE_SUDO="1" \
   PLAN_DURATION_SECONDS="${SMOKE_DURATION_SECONDS}" \
+  PLAN_ATTACK_START_OFFSET_SECONDS="5" \
+  PLAN_ATTACK_STOP_OFFSET_SECONDS="${attack_stop}" \
   PLAN_FORWARDING_ENABLED="${plan_forwarding_enabled}" \
   PLAN_DNS_SPOOF_ENABLED="${plan_dns_spoof_enabled}" \
   PLAN_SPOOFED_DOMAINS="${plan_spoofed_domains}" \
   CAPTURE_PACKET_COUNT="${SMOKE_CAPTURE_PACKET_COUNT}" \
-  KEEP_DEBUG_ARTIFACTS="${SMOKE_KEEP_DEBUG_ARTIFACTS}" \
+  DEBUG="${SMOKE_DEBUG}" \
   IPERF_ENABLE="${SMOKE_IPERF_ENABLE}" \
     "${EXPERIMENT_SCRIPT_DIR}/run-scenario-window.sh" "${scenario_name}" "${SMOKE_DURATION_SECONDS}" "${scenario_note}"
 }
@@ -99,10 +103,13 @@ require_experiment_tools
 start_lab_and_wait_for_access
 verify_isolated_lab
 prepare_attacker_research_workspace
+VICTIM_IP="$(lab_host_ip victim)"
+ATTACKER_IP="$(lab_host_ip attacker)"
+SMOKE_ATTACK_RUNTIME=$((SMOKE_DURATION_SECONDS - 10))
 
 info "Step 1/3: baseline"
 CAPTURE_PACKET_COUNT="${SMOKE_CAPTURE_PACKET_COUNT}" \
-KEEP_DEBUG_ARTIFACTS="${SMOKE_KEEP_DEBUG_ARTIFACTS}" \
+DEBUG="${SMOKE_DEBUG}" \
 IPERF_ENABLE="${SMOKE_IPERF_ENABLE}" \
   "${EXPERIMENT_SCRIPT_DIR}/run-baseline.sh"
 validate_run "baseline" "baseline"
@@ -112,7 +119,7 @@ run_short_recording \
   "smoke-arp-mitm-auto" \
   "Smoke test: short automated ARP MITM run in isolated lab" \
   "smoke-arp-mitm-auto" \
-  "cd '${REMOTE_ROOT}' && exec env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf arp-poison --interface vnic0 --enable-forwarding" \
+  "sleep 5; cd '${REMOTE_ROOT}' && exec timeout -s INT ${SMOKE_ATTACK_RUNTIME} env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf arp-poison --interface vnic0 --victim-ip ${VICTIM_IP} --gateway-ip ${GATEWAY_IP} --interval 1.0 --enable-forwarding" \
   "1" \
   "0"
 validate_run "smoke-arp-mitm-auto" "attack"
@@ -122,10 +129,10 @@ run_short_recording \
   "smoke-arp-mitm-dns-auto" \
   "Smoke test: short automated ARP plus DNS run in isolated lab" \
   "smoke-arp-mitm-dns-auto" \
-  "cd '${REMOTE_ROOT}' && exec env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --enable-forwarding" \
+  "sleep 5; cd '${REMOTE_ROOT}' && exec timeout -s INT ${SMOKE_ATTACK_RUNTIME} env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --victim-ip ${VICTIM_IP} --gateway-ip ${GATEWAY_IP} --answer-ip ${ATTACKER_IP} --interval 1.0 --enable-forwarding --domains iana.org" \
   "1" \
   "1" \
-  "example.com example.org iana.org"
+  "iana.org"
 validate_run "smoke-arp-mitm-dns-auto" "attack"
 
 info "Smoke test finished. Review the newest directories under $(results_root)"

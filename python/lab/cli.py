@@ -31,8 +31,8 @@ def parse_args() -> argparse.Namespace:
     render_zeek_parser = subparsers.add_parser("render-zeek-policy")
     render_zeek_parser.add_argument("repo_root")
     render_zeek_parser.add_argument("output_path")
-    render_zeek_parser.add_argument("--attacker-ip")
-    render_zeek_parser.add_argument("--victim-ip")
+    render_zeek_parser.add_argument("--attacker-ip", required=True)
+    render_zeek_parser.add_argument("--victim-ip", required=True)
 
     json_array_parser = subparsers.add_parser("json-string-array")
     json_array_parser.add_argument("text")

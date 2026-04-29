@@ -181,8 +181,6 @@ def create_schema(connection: sqlite3.Connection) -> None:
             zeek_alert_events,
             suricata_alert_events,
             detector_max_processed_pps,
-            zeek_max_processed_pps,
-            suricata_max_processed_pps,
             run_dir
         FROM runs
         ORDER BY started_at, run_id;
@@ -321,6 +319,7 @@ def upsert_run(
     suricata_throughput = suricata_throughput_summary(suricata_eve_path(run_dir))
     synthetic_traffic = parse_synthetic_traffic_summary(run_dir / "victim" / "traffic-window.txt")
     trusted_db_relative = str(truth_db_path(run_dir).relative_to(run_dir)) if truth_db_path(run_dir).exists() else None
+    packet_timestamped_truth = evaluation.ground_truth_source in {"switch_pcap", "victim_pcap"}
 
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
@@ -370,9 +369,9 @@ def upsert_run(
                 int(evaluation.detector_alert_events),
                 int(evaluation.zeek_alert_events),
                 int(evaluation.suricata_alert_events),
-                evaluation.detector_supported_ttd_seconds,
-                evaluation.zeek_supported_ttd_seconds,
-                evaluation.suricata_supported_ttd_seconds,
+                evaluation.detector_supported_ttd_seconds if packet_timestamped_truth else None,
+                evaluation.zeek_supported_ttd_seconds if packet_timestamped_truth else None,
+                evaluation.suricata_supported_ttd_seconds if packet_timestamped_truth else None,
                 optional_int(detector_throughput.get("packets_seen")),
                 optional_int(detector_throughput.get("packets_processed")),
                 optional_int(detector_throughput.get("packets_dropped")),
@@ -423,9 +422,13 @@ def upsert_run(
         }
         for sensor, (counts, first_seen) in sensor_maps.items():
             for attack_type, alert_count in sorted(counts.items()):
-                attack_type_ttd = time_to_detection_seconds(
-                    evaluation.ground_truth_attack_type_first_seen_at.get(attack_type),
-                    first_seen.get(attack_type),
+                attack_type_ttd = (
+                    time_to_detection_seconds(
+                        evaluation.ground_truth_attack_type_first_seen_at.get(attack_type),
+                        first_seen.get(attack_type),
+                    )
+                    if packet_timestamped_truth
+                    else None
                 )
                 connection.execute(
                     """
@@ -486,8 +489,7 @@ def print_overview(db_path: Path) -> None:
             """
             SELECT run_id, scenario, ground_truth_source, detector_alert_events,
                    zeek_alert_events, suricata_alert_events,
-                   detector_max_processed_pps, zeek_max_processed_pps,
-                   suricata_max_processed_pps, run_dir
+                   detector_max_processed_pps, run_dir
             FROM run_overview
             ORDER BY started_at DESC, run_id DESC
             LIMIT 20
@@ -501,8 +503,6 @@ def print_overview(db_path: Path) -> None:
         "zeek",
         "suricata",
         "detector_pps",
-        "zeek_pps",
-        "suricata_pps",
         "run_dir",
     ]
     print("| " + " | ".join(headers) + " |")

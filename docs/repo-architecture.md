@@ -44,7 +44,6 @@ Experiment orchestration and timed recording:
 - `run-baseline.sh`
 - `run-scenario-window.sh`
 - `run-experiment-plan.sh`
-- `run-supplementary-plan.sh`
 - `run-reliability-plan.sh`
 - `smoke-test.sh`
 
@@ -110,20 +109,16 @@ Run parsing and evaluation logic:
 
 ### `python/reporting/`
 
-Report generation split by concern:
+Report generation is database-first. `make experiment-report` reads
+`results/experiment-results.sqlite` and regenerates the thesis-facing CSVs,
+figures, and markdown index.
 
-- `common.py`
-  - shared reporting constants and helper functions
+- `db_report.py`
+  - SQLite-backed report tables, plots, and markdown index
 - `dataset.py`
-  - row building and dataset export
+  - report-output cleanup helper
 - `plots.py`
-  - figure generation
-- `tables.py`
-  - CSV tables for thesis/report use
-- `markdown.py`
-  - markdown report assembly
-- `builder.py`
-  - class-based build orchestration
+  - shared Matplotlib style helpers used by the database report
 - `cli.py`
   - module entry point used by `make experiment-report`
 
@@ -139,7 +134,7 @@ Detector runtime code:
 Attacker-side research code:
 
 - `attacks.py`
-  - ARP poisoning, DNS spoofing, and rogue DHCP primitives
+  - ARP poisoning, DNS spoofing, and DHCP-spoofing primitives
 - `research.py`
   - lab-scoped runner that builds attack helpers safely
 - `cli.py`
@@ -170,7 +165,7 @@ A typical full workflow looks like this:
 4. `results/experiment-report/`
    - holds the generated outputs
 
-The generated markdown report now includes run-level detection and timing summaries directly, so the normal analysis path does not depend on a separate top-level evaluation make target.
+The generated markdown report now includes run coverage, reliability summaries, and thesis-facing figure references directly, so the normal analysis path does not depend on a separate top-level evaluation make target.
 
 ## Reading Order
 

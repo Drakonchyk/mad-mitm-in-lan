@@ -6,27 +6,12 @@ This page defines the metrics used in the generated reports.
 
 - `detected`
   - whether a run produced at least one relevant alert for the scenario
-- `time_to_first_alert`
-  - delay between the alert and the timing basis used for comparison
 - `event_recall`
   - fraction of trusted attack events matched by a tool for comparable packet-visible evidence
 - `detection_survival`
   - whether a tool still produces at least one relevant alert at a given NetEm loss level
 
 The lab baseline is a clean-sensor reference, not a representative production-traffic corpus. Generic classifier summaries that require broad benign traffic are better suited to future work with diverse real application traffic.
-
-## Timing Basis
-
-The report uses two timing notions:
-
-- raw attack-start timing
-  - used only for chronology and debugging
-  - starts from the earliest observed ground-truth attack evidence
-- comparison-basis timing
-  - used for report figures and tool comparisons
-  - starts from the first ground-truth attack evidence that the sensor actually supports
-
-That means detector, Zeek, and Suricata are compared on a consistent basis even when their supported attack evidence differs.
 
 Trusted-source observations are materialized into `ground-truth/trusted-observations.sqlite`. The database is built from OVS snooping artifacts and records the trusted gateway/DNS/DHCP authorities, ARP/DNS/DHCP trust violations, and detector/Zeek/Suricata comparisons.
 When packet capture is enabled, `pcap/sensor.pcap` remains useful for manual validation and screenshot work. The detector's own JSON event stream is not treated as ground truth.
@@ -41,6 +26,11 @@ Detector heartbeat events report packet-analysis throughput:
 - `packets_processed`
 - `avg_processing_ms`
 - `max_processing_ms`
+
+Only Detector PPS is shown as packet-analysis throughput. Zeek and Suricata expose
+their own statistics through engine/runtime logs, but those counters are not measured
+on the same packet-processing loop as the Detector heartbeat. They are useful for
+debugging individual tools, not for a fair cross-tool PPS comparison.
 
 ## Trusted Truth Versus Alert Counts
 

@@ -2,20 +2,20 @@
 set -euo pipefail
 
 USER_PCAP_RETENTION_POLICY="${PCAP_RETENTION_POLICY-}"
-USER_PCAP_ENABLE="${PCAP_ENABLE-}"
-USER_PORT_PCAP_ENABLE="${PORT_PCAP_ENABLE-}"
-USER_GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE-}"
-USER_PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE-}"
+USER_PCAP="${PCAP-}"
+USER_PORT_PCAP="${PORT_PCAP-}"
+USER_GUEST_PCAP="${GUEST_PCAP-}"
+USER_PCAP_SUMMARIES="${PCAP_SUMMARIES-}"
 
 # shellcheck source=/dev/null
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../experiment-common.sh"
 
 EXPERIMENT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-MEASURED_RUNS="${MEASURED_RUNS:-${RUNS:-1}}"
-PLAN_SCENARIOS="${PLAN_SCENARIOS:-arp-poison-no-forward arp-mitm-forward arp-mitm-dns dhcp-spoof}"
-PCAP_ENABLE="${USER_PCAP_ENABLE:-0}"
-PORT_PCAP_ENABLE="${USER_PORT_PCAP_ENABLE:-0}"
+RUNS_PER_SCENARIO="${RUNS:-1}"
+SELECTED_SCENARIOS="${SCENARIOS:-arp-poison-no-forward arp-mitm-forward arp-mitm-dns dhcp-spoof}"
+PCAP_ENABLE="${USER_PCAP:-0}"
+PORT_PCAP_ENABLE="${USER_PORT_PCAP:-0}"
 if [[ -n "${USER_PCAP_RETENTION_POLICY}" ]]; then
   PCAP_RETENTION_POLICY="${USER_PCAP_RETENTION_POLICY}"
 elif [[ "${PCAP_ENABLE}" == "1" ]]; then
@@ -23,8 +23,8 @@ elif [[ "${PCAP_ENABLE}" == "1" ]]; then
 else
   PCAP_RETENTION_POLICY="none"
 fi
-GUEST_PCAP_ENABLE="${USER_GUEST_PCAP_ENABLE:-0}"
-PCAP_SUMMARIES_ENABLE="${USER_PCAP_SUMMARIES_ENABLE:-0}"
+GUEST_PCAP_ENABLE="${USER_GUEST_PCAP:-0}"
+PCAP_SUMMARIES_ENABLE="${USER_PCAP_SUMMARIES:-0}"
 IPERF_ENABLE="${IPERF_ENABLE:-0}"
 POST_ATTACK_SETTLE_SECONDS="${POST_ATTACK_SETTLE_SECONDS:-0}"
 DETECTOR_HEARTBEAT_SECONDS="${DETECTOR_HEARTBEAT_SECONDS:-2}"
@@ -41,10 +41,16 @@ Usage: ./shell/experiments/run-experiment-plan.sh [options]
 Options:
   --skip N                  Skip the first N planned run windows
   --start N                 Start from the Nth planned run window (1-based)
-  --start-scenario NAME     Start when NAME is reached in PLAN_SCENARIOS
+  --start-scenario NAME     Start when NAME is reached in SCENARIOS
   --skip-scenario NAME      Exclude NAME from the planned scenarios (repeatable)
   --runs N                  Runs per scenario (default: 1)
   --help                    Show this help text
+
+Make aliases:
+  RUNS=5 make experiment-plan
+  SCENARIOS="dhcp-spoof" make experiment-plan
+  SKIP=2 START=3 SKIP_SCENARIO=arp-mitm-forward make experiment-plan
+  DEBUG=1 PCAP=1 PORT_PCAP=1 make experiment-plan
 EOF
 }
 
@@ -66,8 +72,8 @@ while [[ $# -gt 0 ]]; do
       PLAN_SKIP_SCENARIOS+=("${2:?missing value for --skip-scenario}")
       shift 2
       ;;
-    --runs|--measured-runs)
-      MEASURED_RUNS="${2:?missing value for --runs}"
+    --runs)
+      RUNS_PER_SCENARIO="${2:?missing value for --runs}"
       shift 2
       ;;
     --help|-h)
@@ -84,9 +90,9 @@ done
 
 if ! [[ "${PLAN_SKIP_RUNS}" =~ ^[0-9]+$ ]] \
   || ! [[ "${PLAN_START_RUN}" =~ ^[0-9]+$ ]] \
-  || ! [[ "${MEASURED_RUNS}" =~ ^[0-9]+$ ]] \
+  || ! [[ "${RUNS_PER_SCENARIO}" =~ ^[0-9]+$ ]] \
   || (( PLAN_START_RUN < 1 )) \
-  || (( MEASURED_RUNS < 1 )); then
+  || (( RUNS_PER_SCENARIO < 1 )); then
   warn "--skip must be >= 0; --start and --runs must be >= 1"
   exit 1
 fi
@@ -143,6 +149,7 @@ run_window() {
   GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE}" \
   PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE}" \
   PCAP_RETENTION_POLICY="${PCAP_RETENTION_POLICY}" \
+  DEBUG_ARTIFACTS_ENABLED="${DEBUG_ARTIFACTS_ENABLED}" \
   IPERF_ENABLE="${IPERF_ENABLE}" \
   POST_ATTACK_SETTLE_SECONDS="${POST_ATTACK_SETTLE_SECONDS}" \
   DETECTOR_HEARTBEAT_SECONDS="${DETECTOR_HEARTBEAT_SECONDS}" \
@@ -152,6 +159,10 @@ run_window() {
 run_scenario() {
   local scenario="$1"
   local run_index="$2"
+  local victim_ip attacker_ip
+
+  victim_ip="$(lab_host_ip victim)"
+  attacker_ip="$(lab_host_ip attacker)"
 
   case "${scenario}" in
     baseline)
@@ -179,7 +190,7 @@ run_scenario() {
         "0" \
         "0" \
         "" \
-        "sleep 5; cd '${REMOTE_ROOT}' && exec timeout -s INT 20 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf arp-poison --interface vnic0" \
+        "sleep 5; cd '${REMOTE_ROOT}' && exec timeout -s INT 20 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf arp-poison --interface vnic0 --victim-ip ${victim_ip} --gateway-ip ${GATEWAY_IP} --interval 1.0" \
         ""
       ;;
     arp-mitm-forward)
@@ -193,7 +204,7 @@ run_scenario() {
         "1" \
         "0" \
         "" \
-        "sleep 5; cd '${REMOTE_ROOT}' && exec timeout -s INT 20 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf arp-poison --interface vnic0 --enable-forwarding" \
+        "sleep 5; cd '${REMOTE_ROOT}' && exec timeout -s INT 20 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf arp-poison --interface vnic0 --victim-ip ${victim_ip} --gateway-ip ${GATEWAY_IP} --interval 1.0 --enable-forwarding" \
         ""
       ;;
     arp-mitm-dns)
@@ -207,21 +218,21 @@ run_scenario() {
         "1" \
         "1" \
         "iana.org" \
-        "sleep 5; cd '${REMOTE_ROOT}' && exec timeout -s INT 30 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --enable-forwarding --domains iana.org" \
+        "sleep 5; cd '${REMOTE_ROOT}' && exec timeout -s INT 30 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf mitm-dns --interface vnic0 --victim-ip ${victim_ip} --gateway-ip ${GATEWAY_IP} --answer-ip ${attacker_ip} --interval 1.0 --enable-forwarding --domains iana.org" \
         ""
       ;;
     dhcp-spoof)
       run_window \
         "dhcp-spoof" \
         "30" \
-        "Planned rogue DHCP offer and ACK broadcast run" \
+        "Planned DHCP spoof offer and ACK broadcast run" \
         "${run_index}" \
         "5" \
         "25" \
         "0" \
         "0" \
         "" \
-        "sleep 5; cd '${REMOTE_ROOT}' && exec timeout -s INT 20 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf dhcp-spoof --interface vnic0 --interval 1.0" \
+        "sleep 5; cd '${REMOTE_ROOT}' && exec timeout -s INT 20 env PYTHONPATH='./python' python3 -m mitm.cli --config ./lab.conf dhcp-spoof --interface vnic0 --victim-ip ${victim_ip} --server-ip ${attacker_ip} --interval 1.0" \
         ""
       ;;
     *)
@@ -246,7 +257,7 @@ scenario_selected() {
 started=0
 planned_run=0
 
-for scenario in ${PLAN_SCENARIOS}; do
+for scenario in ${SELECTED_SCENARIOS}; do
   if ! scenario_selected "${scenario}"; then
     info "Skipping scenario=${scenario} because it was excluded by --skip-scenario"
     continue
@@ -260,7 +271,7 @@ for scenario in ${PLAN_SCENARIOS}; do
     started=1
   fi
 
-  for ((run = 1; run <= MEASURED_RUNS; run++)); do
+  for ((run = 1; run <= RUNS_PER_SCENARIO; run++)); do
     planned_run=$((planned_run + 1))
     if (( planned_run < START_AT_RUN_INDEX )); then
       info "Skipping planned run #${planned_run}: scenario=${scenario} run_index=${run}"

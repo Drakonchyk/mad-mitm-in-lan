@@ -6,23 +6,18 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from metrics.primitives import safe_divide
 from metrics.run_artifacts import detector_delta_path, load_json, load_jsonl, parse_traffic_windows
 from reporting.common import (
     SCENARIO_LABELS,
     TOOL_LABELS,
     TOOL_ORDER,
-    attack_relative_ttd,
-    row_mean,
     rows_for_scenario,
     run_dir_for_row,
     seconds_between,
-    tool_alert_field,
-    tool_first_alert_timestamp,
 )
-from scenarios.definitions import MAIN_SCENARIOS, SCENARIO_ATTACK_TYPES, SUPPLEMENTARY_SCENARIOS
+from scenarios.definitions import MAIN_SCENARIOS, RELIABILITY_SCENARIOS, SCENARIO_ATTACK_TYPES
 
-SCENARIO_ORDER_ALL = [*MAIN_SCENARIOS, *SUPPLEMENTARY_SCENARIOS]
+SCENARIO_ORDER_ALL = [*MAIN_SCENARIOS, *RELIABILITY_SCENARIOS]
 GENERIC_PROTOCOLS = {"", "frame", "eth", "ethertype", "ip", "ipv6", "tcp", "udp", "data", "geninfo"}
 
 
@@ -152,18 +147,6 @@ def build_table_scenario_summary(rows: list[dict[str, Any]], output_dir: Path) -
     return _write_rows(output_dir / "table-01-scenario-summary.csv", summary_rows)
 
 
-def build_table_timing_summary(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
-    summary_rows = []
-    for scenario in _attack_scenarios(rows):
-        scenario_rows = rows_for_scenario(rows, scenario)
-        record: dict[str, Any] = {"scenario": SCENARIO_LABELS[scenario]}
-        for tool in TOOL_ORDER:
-            record[f"{tool}_ttd_mean"] = _mean_or_none([row.get(f"{tool}_ttd_seconds") for row in scenario_rows])
-            record[f"{tool}_attack_relative_mean"] = _mean_or_none([attack_relative_ttd(row, tool) for row in scenario_rows])
-        summary_rows.append(record)
-    return _write_rows(output_dir / "table-02-timing-summary.csv", summary_rows)
-
-
 def build_table_operational_summary(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
     baseline_rows = rows_for_scenario(rows, "baseline")
     baseline_ping = _mean_or_none([row.get("ping_gateway_avg_ms") for row in baseline_rows])
@@ -188,47 +171,6 @@ def build_table_operational_summary(rows: list[dict[str, Any]], output_dir: Path
             }
         )
     return _write_rows(output_dir / "table-03-operational-summary.csv", summary_rows)
-
-
-def build_table_tool_overall(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
-    attack_rows = [row for row in rows if SCENARIO_ATTACK_TYPES.get(str(row["scenario"]))]
-    baseline_rows = [row for row in rows if str(row["scenario"]) == "baseline"]
-    table_rows = []
-    for tool in TOOL_ORDER:
-        table_rows.append(
-            {
-                "tool": TOOL_LABELS[tool],
-                "attack_runs": len(attack_rows),
-                "attack_runs_with_alerts": sum(1 for row in attack_rows if bool(row.get(f"{tool}_detected"))),
-                "baseline_runs": len(baseline_rows),
-                "baseline_runs_with_alerts": sum(
-                    1 for row in baseline_rows if int(row.get(tool_alert_field(tool)) or 0) > 0
-                ),
-                "mean_attack_relative_ttd_s": _mean_or_none([attack_relative_ttd(row, tool) for row in attack_rows]),
-                "mean_ttd_s": row_mean([row.get(f"{tool}_ttd_seconds") for row in attack_rows]),
-                "mean_alerts_per_run": row_mean([row.get(tool_alert_field(tool)) for row in rows]),
-            }
-        )
-    return _write_rows(output_dir / "table-04-tool-overall.csv", table_rows)
-
-
-def build_table_tool_by_scenario(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
-    table_rows = []
-    for scenario in _ordered_scenarios(rows):
-        scenario_rows = rows_for_scenario(rows, scenario)
-        for tool in TOOL_ORDER:
-            table_rows.append(
-                {
-                    "scenario": scenario,
-                    "tool": TOOL_LABELS[tool],
-                    "runs": len(scenario_rows),
-                    "detection_rate_pct": safe_divide(sum(1 for row in scenario_rows if row.get(f"{tool}_detected")), len(scenario_rows)) * 100.0,
-                    "mean_attack_relative_ttd_s": _mean_or_none([attack_relative_ttd(row, tool) for row in scenario_rows]),
-                    "mean_ttd_s": row_mean([row.get(f"{tool}_ttd_seconds") for row in scenario_rows]),
-                    "mean_alerts_per_run": row_mean([row.get(tool_alert_field(tool)) for row in scenario_rows]),
-                }
-            )
-    return _write_rows(output_dir / "table-05-tool-by-scenario.csv", table_rows)
 
 
 def build_table_wire_truth_summary(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
@@ -294,7 +236,6 @@ def _build_detection_table(
             detected = _detected_count(scenario_rows, tool)
             record[f"{tool}_detected_runs"] = detected
             record[f"{tool}_detection_rate_pct"] = _rate_pct(detected, len(scenario_rows))
-            record[f"{tool}_mean_attack_relative_ttd_s"] = _mean_or_none([attack_relative_ttd(row, tool) for row in scenario_rows])
         table_rows.append(record)
     return _write_rows(output_path, table_rows)
 
@@ -303,15 +244,15 @@ def build_table_thesis_main_detection(rows: list[dict[str, Any]], output_dir: Pa
     return _build_detection_table(
         rows,
         MAIN_SCENARIOS,
-        output_dir / "table-01-thesis-main-detection-timing.csv",
+        output_dir / "table-01-thesis-main-detection.csv",
     )
 
 
-def build_table_thesis_supplementary_detection(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
+def build_table_thesis_reliability_detection(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
     return _build_detection_table(
         rows,
-        SUPPLEMENTARY_SCENARIOS,
-        output_dir / "table-02-thesis-supplementary-campaign-summary.csv",
+        RELIABILITY_SCENARIOS,
+        output_dir / "table-02-thesis-reliability-campaign-summary.csv",
     )
 
 
@@ -378,23 +319,6 @@ def build_table_representative_context(rows: list[dict[str, Any]], output_dir: P
         {"field": "observed_start_offset_s", "value": timing["observed_start"]},
     ]
     return _write_rows(output_dir / "table-06-representative-run-context.csv", records)
-
-
-def build_table_representative_first_alerts(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:
-    row = _choose_representative_run(rows)
-    if row is None:
-        return None
-    records = [
-        {
-            "tool": TOOL_LABELS[tool],
-            "first_alert_at": tool_first_alert_timestamp(row, tool),
-            "ttd_s": row.get(f"{tool}_ttd_seconds"),
-            "attack_relative_ttd_s": attack_relative_ttd(row, tool),
-            "alerts": row.get(tool_alert_field(tool)),
-        }
-        for tool in TOOL_ORDER
-    ]
-    return _write_rows(output_dir / "table-07-representative-first-alerts.csv", records)
 
 
 def build_table_probe_window_domain_observations(rows: list[dict[str, Any]], output_dir: Path) -> Path | None:

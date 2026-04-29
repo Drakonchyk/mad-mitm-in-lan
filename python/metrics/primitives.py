@@ -83,12 +83,20 @@ def parse_iso8601(value: str | datetime | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+TTD_PRECISION_SECONDS = 3
+
+
+def normalize_ttd_seconds(value: float) -> float:
+    rounded = round(max(value, 0.0), TTD_PRECISION_SECONDS)
+    return 0.0 if rounded <= 0.001 else rounded
+
+
 def time_to_detection_seconds(attack_started_at: str | datetime | None, first_alert_at: str | datetime | None) -> float | None:
     start = parse_iso8601(attack_started_at)
     alert = parse_iso8601(first_alert_at)
     if start is None or alert is None:
         return None
-    return max((alert - start).total_seconds(), 0.0)
+    return normalize_ttd_seconds((alert - start).total_seconds())
 
 
 def relative_overhead_percent(baseline_value: float, with_detector_value: float) -> float | None:

@@ -6,16 +6,15 @@ from pathlib import Path
 from reporting.common import (
     TOOL_LABELS,
     TOOL_ORDER,
-    attack_relative_ttd,
     format_float,
     path_rel,
     row_mean,
     rows_for_scenario,
     tool_alert_field,
 )
-from scenarios.definitions import MAIN_SCENARIOS, SCENARIO_ATTACK_TYPES, SUPPLEMENTARY_SCENARIOS
+from scenarios.definitions import MAIN_SCENARIOS, RELIABILITY_SCENARIOS, SCENARIO_ATTACK_TYPES
 
-SCENARIO_ORDER_ALL = [*MAIN_SCENARIOS, *SUPPLEMENTARY_SCENARIOS]
+SCENARIO_ORDER_ALL = [*MAIN_SCENARIOS, *RELIABILITY_SCENARIOS]
 
 
 def _overall_detection_lines(rows: list[dict[str, object]]) -> list[str]:
@@ -27,8 +26,7 @@ def _overall_detection_lines(rows: list[dict[str, object]]) -> list[str]:
         baseline_alerts = sum(1 for row in baseline_rows if int(row.get(tool_alert_field(tool)) or 0) > 0)
         lines.append(
             f"- {TOOL_LABELS[tool]}: attack runs with alerts={attack_detected}/{len(attack_rows)}, "
-            f"baseline runs with alerts={baseline_alerts}/{len(baseline_rows)}, "
-            f"mean attack-relative first-alert time={format_float(row_mean([attack_relative_ttd(row, tool) for row in attack_rows]))} s."
+            f"baseline runs with alerts={baseline_alerts}/{len(baseline_rows)}."
         )
     return lines
 
@@ -101,9 +99,6 @@ def write_markdown_summary(
             "## Findings",
             "",
             "- The generated tables are limited to thesis-facing summaries; packet-forensics details remain in the raw run artifacts and dataset export.",
-            f"- Detector mean attack-relative first-alert time: {format_float(row_mean([attack_relative_ttd(row, 'detector') for row in attack_rows]))} s.",
-            f"- Zeek mean attack-relative first-alert time: {format_float(row_mean([attack_relative_ttd(row, 'zeek') for row in attack_rows]))} s.",
-            f"- Suricata mean attack-relative first-alert time: {format_float(row_mean([attack_relative_ttd(row, 'suricata') for row in attack_rows]))} s.",
             f"- Detector mean alert count per run: {format_float(row_mean([row.get(tool_alert_field('detector')) for row in rows]))}.",
             f"- Zeek mean alert count per run: {format_float(row_mean([row.get(tool_alert_field('zeek')) for row in rows]))}.",
             f"- Suricata mean alert count per run: {format_float(row_mean([row.get(tool_alert_field('suricata')) for row in rows]))}.",

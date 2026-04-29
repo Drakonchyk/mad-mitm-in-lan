@@ -16,6 +16,7 @@ start_lab_and_wait_for_access
 prepare_victim_detector
 prepare_victim_zeek
 prepare_victim_suricata
+reset_lab_neighbor_state
 BASELINE_PERF_PROBES_ENABLE="${BASELINE_PERF_PROBES_ENABLE:-0}"
 
 DETECTOR_OFFSET="$(local_file_size /tmp/mitm-lab-detector-host.jsonl)"

@@ -18,19 +18,14 @@ warn() {
 dhcp_snooping_mode() {
   local mode="${LAB_DHCP_SNOOPING_MODE:-monitor}"
 
-  if [[ "${LAB_DHCP_SNOOPING_ENFORCE:-0}" == "1" ]]; then
-    printf 'enforce\n'
-    return 0
-  fi
-
   case "${mode,,}" in
-    monitor|observe|detect)
+    monitor)
       printf 'monitor\n'
       ;;
-    enforce|drop)
+    enforce)
       printf 'enforce\n'
       ;;
-    off|disable|disabled|0|false|no)
+    off)
       printf 'off\n'
       ;;
     *)

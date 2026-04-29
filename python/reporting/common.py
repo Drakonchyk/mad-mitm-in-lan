@@ -19,7 +19,6 @@ from scenarios.definitions import (
     MAIN_SCENARIOS,
     SCENARIO_ATTACK_TYPES,
     SCENARIO_LABELS,
-    SUPPLEMENTARY_SCENARIOS,
 )
 
 RESTORATION_EVENTS = {
@@ -32,7 +31,7 @@ COMPOSITION_SERIES = {
     "gateway_mac_changed": "Gateway MAC Changed",
     "multiple_gateway_macs_seen": "Multiple Gateway MACs",
     "icmp_redirects_seen": "ICMP Redirects",
-    "rogue_dhcp_server_seen": "Rogue DHCP Server Seen",
+    "rogue_dhcp_server_seen": "DHCP Spoof Server Seen",
     "dhcp_reply_from_untrusted_switch_port_seen": "DHCP Reply From Untrusted Port",
     "dhcp_binding_conflict_seen": "DHCP Binding Conflict",
     "domain_resolution_changed": "Domain Resolution Changed",
@@ -52,12 +51,6 @@ def path_rel(path: Path, output_dir: Path) -> str:
 
 def tool_alert_field(tool: str) -> str:
     return "detector_alerts_native" if tool == "detector" else f"{tool}_alerts"
-
-
-def tool_first_alert_timestamp(row: dict[str, Any], tool: str) -> str | None:
-    if tool == "detector":
-        return row.get("detector_first_alert_at_native") or row.get("detector_first_alert_at")
-    return row.get(f"{tool}_first_alert_at")
 
 
 def first_record_timestamp(
@@ -116,10 +109,6 @@ def seconds_between(start_value: str | None, end_value: str | None) -> float | N
     if start is None or end is None:
         return None
     return (end - start).total_seconds()
-
-
-def attack_relative_ttd(row: dict[str, Any], tool: str) -> float | None:
-    return seconds_between(row.get("attack_started_at"), tool_first_alert_timestamp(row, tool))
 
 
 def row_mean(values: list[float | None]) -> float | None:

@@ -13,19 +13,16 @@ from reporting.common import (
     SCENARIO_LABELS,
     TOOL_LABELS,
     TOOL_ORDER,
-    attack_relative_ttd,
     representative_probe_series,
     representative_row,
-    row_mean,
     rows_for_scenario,
     run_dir_for_row,
     seconds_between,
     tool_alert_field,
-    tool_first_alert_timestamp,
 )
-from scenarios.definitions import MAIN_SCENARIOS, SCENARIO_ATTACK_TYPES, SUPPLEMENTARY_SCENARIOS
+from scenarios.definitions import MAIN_SCENARIOS, RELIABILITY_SCENARIOS, SCENARIO_ATTACK_TYPES
 
-SCENARIO_ORDER_ALL = [*MAIN_SCENARIOS, *SUPPLEMENTARY_SCENARIOS]
+SCENARIO_ORDER_ALL = [*MAIN_SCENARIOS, *RELIABILITY_SCENARIOS]
 TOOL_COLORS = {"detector": "#1d4ed8", "zeek": "#d97706", "suricata": "#0f766e"}
 SCENARIO_COLORS = {
     "baseline": "#94a3b8",
@@ -313,82 +310,6 @@ def _plot_reliability_event_recall_triptych(rows: list[dict[str, Any]], output_d
     return _save(fig, output_dir / "figure-39-reliability-event-recall-triptych.png", plt)
 
 
-def _plot_reliability_ttd_triptych(rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
-    campaign_rows = _reliability_campaign_rows(rows)
-    if not campaign_rows:
-        return None
-
-    scenarios = sorted({str(row["scenario"]) for row in campaign_rows}, key=lambda item: SCENARIO_LABELS.get(item, item))
-    loss_values = sorted(
-        {int(row.get("reliability_netem_loss_percent") or 0) for row in campaign_rows},
-        reverse=True,
-    )
-    row_labels: list[str] = []
-    matrix: list[list[float]] = []
-    misses: list[list[bool]] = []
-    for scenario in scenarios:
-        scenario_rows = rows_for_scenario(campaign_rows, scenario)
-        for tool in TOOL_ORDER:
-            row_labels.append(f"{SCENARIO_LABELS.get(scenario, scenario)} / {TOOL_LABELS[tool]}")
-            timing_row: list[float] = []
-            miss_row: list[bool] = []
-            for loss_percent in loss_values:
-                matching = [
-                    row
-                    for row in scenario_rows
-                    if int(row.get("reliability_netem_loss_percent") or 0) == loss_percent
-                ]
-                value = _mean_or_none([attack_relative_ttd(row, tool) for row in matching])
-                timing_row.append(math.nan if value is None else float(value))
-                miss_row.append(value is None)
-            matrix.append(timing_row)
-            misses.append(miss_row)
-
-    data = np.array(matrix, dtype=float)
-    if np.isnan(data).all():
-        return None
-
-    finite = data[np.isfinite(data)]
-    vmax = max(1.0, float(np.nanpercentile(finite, 95)))
-    fig, ax = plt.subplots(figsize=(13.4, 5.8))
-    cmap = plt.cm.YlOrRd.copy()
-    cmap.set_bad("#e7e5e4")
-    image = ax.imshow(np.ma.masked_invalid(data), aspect="auto", cmap=cmap, vmin=0.0, vmax=vmax)
-
-    ax.set_xticks(range(len(loss_values)))
-    ax.set_xticklabels([str(value) for value in loss_values], rotation=45, ha="right")
-    ax.set_yticks(range(len(row_labels)))
-    ax.set_yticklabels(row_labels)
-    ax.set_xlabel("NetEm packet loss (%)")
-    ax.set_title("Reliability Failure Frontier: Time To First Alert")
-    ax.grid(False)
-
-    for row_index, miss_row in enumerate(misses):
-        detected_columns = [idx for idx, missed in enumerate(miss_row) if not missed]
-        missed_columns = [idx for idx, missed in enumerate(miss_row) if missed]
-        for col_index in detected_columns:
-            value = data[row_index, col_index]
-            label = f"{value:.0f}" if value >= 10 else f"{value:.1f}"
-            ax.text(col_index, row_index, label, ha="center", va="center", fontsize=8, color="#1c1917")
-        for col_index in missed_columns:
-            ax.text(col_index, row_index, "miss", ha="center", va="center", fontsize=8, fontweight="bold", color="#7f1d1d")
-        if detected_columns and missed_columns:
-            boundary = max(missed_columns)
-            ax.axvline(boundary - 0.5, color="#78716c", linestyle=":", linewidth=1.0, alpha=0.7)
-
-    cbar = fig.colorbar(image, ax=ax, fraction=0.026, pad=0.02)
-    cbar.set_label("Attack-relative TTD (s)")
-    ax.text(
-        0.01,
-        -0.19,
-        "Cells show seconds to first alert; grey/miss cells mean the tool did not report the scenario at that packet-loss level.",
-        transform=ax.transAxes,
-        fontsize=9,
-        color="#57534e",
-    )
-    return _save(fig, output_dir / "figure-40-reliability-time-to-detection-triptych.png", plt)
-
-
 def _plot_detector_semantic_composition(rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
     scenarios = _scenario_order(rows)
     if not scenarios:
@@ -397,7 +318,7 @@ def _plot_detector_semantic_composition(rows: list[dict[str, Any]], output_dir: 
         ("gateway_mac_changed", "Gateway MAC Changed", "#ef4444"),
         ("multiple_gateway_macs_seen", "Multiple Gateway MACs", "#f97316"),
         ("icmp_redirects_seen", "ICMP Redirects", "#2563eb"),
-        ("rogue_dhcp_server_seen", "Rogue DHCP Server", "#0f766e"),
+        ("rogue_dhcp_server_seen", "DHCP Spoof Server", "#0f766e"),
         ("dhcp_binding_conflict_seen", "DHCP Binding Conflict", "#10b981"),
         ("domain_resolution_changed", "Domain Resolution Changed", "#7c3aed"),
     ]
@@ -412,116 +333,6 @@ def _plot_detector_semantic_composition(rows: list[dict[str, Any]], output_dir: 
     ax.tick_params(axis="x", rotation=28)
     ax.legend(loc="upper right")
     return _save(fig, output_dir / "figure-04-detector-semantic-alert-composition.png", plt)
-
-
-def _plot_attack_relative_ttd_heatmap(rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
-    scenarios = _attack_scenarios(rows)
-    if not scenarios:
-        return None
-    matrix = []
-    for scenario in scenarios:
-        scenario_rows = rows_for_scenario(rows, scenario)
-        matrix.append([_mean_or_none([attack_relative_ttd(row, tool) for row in scenario_rows]) for tool in TOOL_ORDER])
-    matrix_np = np.array([[np.nan if value is None else float(value) for value in row] for row in matrix], dtype=float)
-    fig, ax = plt.subplots(figsize=(7.2, max(4.8, len(scenarios) * 0.48)))
-    cmap = plt.cm.YlOrRd.copy()
-    cmap.set_bad(color="#f5f5f4")
-    image = ax.imshow(matrix_np, cmap=cmap, aspect="auto")
-    ax.set_xticks(range(len(TOOL_ORDER)))
-    ax.set_xticklabels([TOOL_LABELS[tool] for tool in TOOL_ORDER], rotation=24, ha="right")
-    ax.set_yticks(range(len(scenarios)))
-    ax.set_yticklabels([SCENARIO_LABELS.get(scenario, scenario) for scenario in scenarios])
-    ax.set_title("Mean Attack-Relative Time-To-Detection", fontweight="bold")
-    for row_index in range(matrix_np.shape[0]):
-        for col_index in range(matrix_np.shape[1]):
-            value = matrix_np[row_index, col_index]
-            ax.text(col_index, row_index, "n/a" if np.isnan(value) else f"{value:.2f}", ha="center", va="center", color="#111827", fontsize=10)
-    fig.colorbar(image, ax=ax, fraction=0.048, pad=0.04)
-    return _save(fig, output_dir / "figure-05-mean-attack-relative-time-to-detection.png", plt)
-
-
-def _plot_attack_relative_ttd_distributions(rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
-    scenarios = _attack_scenarios(rows)
-    if not scenarios:
-        return None
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5.2), sharey=True)
-    rng = np.random.default_rng(7)
-    fill_colors = {"detector": "#a5b4fc", "zeek": "#fcd34d", "suricata": "#99f6e4"}
-    point_colors = {"detector": "#1d4ed8", "zeek": "#d97706", "suricata": "#0f766e"}
-    for ax, tool in zip(axes, TOOL_ORDER):
-        series = []
-        for scenario in scenarios:
-            values = [float(attack_relative_ttd(row, tool)) for row in rows_for_scenario(rows, scenario) if attack_relative_ttd(row, tool) is not None]
-            series.append(values)
-        safe_series = [values if values else [np.nan] for values in series]
-        box = ax.boxplot(safe_series, labels=scenarios, patch_artist=True, showfliers=False, showmeans=True, meanprops={"marker": "+", "markeredgecolor": point_colors[tool], "markersize": 10})
-        for patch in box["boxes"]:
-            patch.set_facecolor(fill_colors[tool])
-            patch.set_alpha(0.45)
-        for median in box["medians"]:
-            median.set_color("#111827")
-        for whisker in box["whiskers"]:
-            whisker.set_color("#111827")
-        for cap in box["caps"]:
-            cap.set_color("#111827")
-        for idx, values in enumerate(series, start=1):
-            if not values:
-                continue
-            jitter = rng.normal(idx, 0.06, len(values))
-            ax.scatter(jitter, values, s=24, color=point_colors[tool], alpha=0.78, edgecolors="white", linewidths=0.35)
-        ax.set_title(TOOL_LABELS[tool])
-        ax.set_ylabel("Time from attack start to first alert (s)")
-        ax.tick_params(axis="x", rotation=28)
-    fig.suptitle("Attack-Relative Detection-Time Distributions", y=1.03)
-    return _save(fig, output_dir / "figure-06-attack-relative-detection-time-distributions.png", plt)
-
-
-def _plot_attack_relative_ttd_ecdf(rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
-    attack_rows = [
-        row
-        for row in rows
-        if _is_plotted_scenario(str(row.get("scenario", ""))) and SCENARIO_ATTACK_TYPES.get(str(row["scenario"]))
-    ]
-    if not attack_rows:
-        return None
-    fig, ax = plt.subplots(figsize=(8, 4.8))
-    for tool in TOOL_ORDER:
-        values = sorted(float(attack_relative_ttd(row, tool)) for row in attack_rows if attack_relative_ttd(row, tool) is not None)
-        if not values:
-            continue
-        ys = [(index + 1) / len(values) for index in range(len(values))]
-        ax.step(values, ys, where="post", linewidth=2, color=TOOL_COLORS[tool], label=TOOL_LABELS[tool])
-    ax.set_xlabel("Attack-relative timing (s)")
-    ax.set_ylabel("Fraction of attack runs")
-    ax.set_title("ECDF Of Attack-Relative Time To First Alert")
-    ax.legend()
-    return _save(fig, output_dir / "figure-07-ecdf-of-attack-relative-timing.png", plt)
-
-
-def _plot_first_alert_winner_count(rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
-    attack_rows = [
-        row
-        for row in rows
-        if _is_plotted_scenario(str(row.get("scenario", ""))) and SCENARIO_ATTACK_TYPES.get(str(row["scenario"]))
-    ]
-    if not attack_rows:
-        return None
-    counts = {tool: 0 for tool in TOOL_ORDER}
-    for row in attack_rows:
-        options = []
-        for tool in TOOL_ORDER:
-            value = attack_relative_ttd(row, tool)
-            if value is not None:
-                options.append((value, tool))
-        if options:
-            counts[min(options)[1]] += 1
-    fig, ax = plt.subplots(figsize=(6.5, 4.2))
-    labels = [TOOL_LABELS[tool] for tool in TOOL_ORDER]
-    values = [counts[tool] for tool in TOOL_ORDER]
-    ax.bar(labels, values, color=[TOOL_COLORS[tool] for tool in TOOL_ORDER])
-    ax.set_ylabel("Attack runs where the tool was first")
-    ax.set_title("First-Alert Winner Count")
-    return _save(fig, output_dir / "figure-08-first-alert-winner-count.png", plt)
 
 
 def _plot_operational_metrics(rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
@@ -634,7 +445,7 @@ def _plot_wire_truth_packet_counts(rows: list[dict[str, Any]], output_dir: Path,
     attack_specs = [
         ("arp_spoof", "ARP spoof", "#ef4444"),
         ("dns_spoof", "DNS spoof", "#7c3aed"),
-        ("dhcp_rogue_server", "DHCP rogue server", "#0f766e"),
+        ("dhcp_rogue_server", "DHCP spoof server", "#0f766e"),
         ("dhcp_untrusted_switch_port", "DHCP untrusted port", "#14b8a6"),
         ("icmp_redirect", "ICMP redirect", "#2563eb"),
     ]
@@ -666,7 +477,7 @@ def _plot_wire_truth_packet_rates(rows: list[dict[str, Any]], output_dir: Path, 
     attack_specs = [
         ("arp_spoof", "ARP spoof pps", "#ef4444"),
         ("dns_spoof", "DNS spoof pps", "#7c3aed"),
-        ("dhcp_rogue_server", "DHCP rogue-server pps", "#0f766e"),
+        ("dhcp_rogue_server", "DHCP spoof-server pps", "#0f766e"),
         ("dhcp_untrusted_switch_port", "DHCP untrusted-port pps", "#14b8a6"),
     ]
     width = 0.22
@@ -884,7 +695,7 @@ def _plot_mean_detector_semantic_counts(rows: list[dict[str, Any]], output_dir: 
         ("gateway_mac_changed", "Gateway MAC Changed", "#dc2626"),
         ("multiple_gateway_macs_seen", "Multiple Gateway MACs", "#ea580c"),
         ("icmp_redirects_seen", "ICMP Redirects", "#2563eb"),
-        ("rogue_dhcp_server_seen", "Rogue DHCP Server", "#0f766e"),
+        ("rogue_dhcp_server_seen", "DHCP Spoof Server", "#0f766e"),
         ("dhcp_binding_conflict_seen", "DHCP Binding Conflict", "#10b981"),
         ("domain_resolution_changed", "Domain Resolution Changed", "#7c3aed"),
     ]
@@ -911,7 +722,7 @@ def _plot_detector_packet_alerts_by_scenario(rows: list[dict[str, Any]], output_
         ("arp_spoof", "ARP spoof packets", "#ef4444"),
         ("icmp_redirect", "ICMP redirects", "#2563eb"),
         ("dns_spoof", "DNS spoof packets", "#7c3aed"),
-        ("dhcp_rogue_server", "DHCP rogue-server packets", "#0f766e"),
+        ("dhcp_rogue_server", "DHCP spoof-server packets", "#0f766e"),
         ("dhcp_untrusted_switch_port", "DHCP untrusted-port packets", "#14b8a6"),
     ]
     labels = [SCENARIO_LABELS[scenario] for scenario in scenarios]
@@ -938,7 +749,7 @@ def _plot_share_of_runs_with_events(rows: list[dict[str, Any]], output_dir: Path
         ("gateway_mac_changed", "Gateway MAC Changed"),
         ("multiple_gateway_macs_seen", "Multiple Gateway MACs"),
         ("icmp_redirects_seen", "ICMP Redirects"),
-        ("rogue_dhcp_server_seen", "Rogue DHCP Server"),
+        ("rogue_dhcp_server_seen", "DHCP Spoof Server"),
         ("dhcp_binding_conflict_seen", "DHCP Binding Conflict"),
         ("domain_resolution_changed", "Domain Changed"),
         ("domain_resolution_restored", "Domain Restored"),
@@ -1047,14 +858,11 @@ def build_report_plots(rows: list[dict[str, Any]], output_dir: Path) -> tuple[di
 
     plots: dict[str, Path] = {}
     notes = [
-        "Timing views use attack-relative first alert time where appropriate.",
-        "Overload calibration runs are intentionally excluded from thesis figures until that campaign is finalized.",
+        "File-artifact reporting is kept for debugging; thesis figures are generated from the SQLite report path.",
     ]
 
     builders = [
-        ("Detection Timing / Mean Attack-Relative Time-To-Detection", _plot_attack_relative_ttd_heatmap),
         ("Reliability / Event Recall vs Reliability", _plot_reliability_event_recall_triptych),
-        ("Reliability / Time-To-Detection vs Reliability", _plot_reliability_ttd_triptych),
     ]
 
     for title, builder in builders:

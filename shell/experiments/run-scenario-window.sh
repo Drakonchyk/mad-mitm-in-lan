@@ -60,6 +60,7 @@ prepare_reliability_netem
 prepare_victim_detector
 prepare_victim_zeek
 prepare_victim_suricata
+reset_lab_neighbor_state
 
 DETECTOR_OFFSET="$(local_file_size /tmp/mitm-lab-detector-host.jsonl)"
 DNSMASQ_OFFSET="$(remote_file_size gateway /var/log/dnsmasq-mitm-lab.log)"
@@ -306,7 +307,7 @@ if [[ "${IPERF_ENABLE}" == "1" ]]; then
     fetch_remote_file victim "/tmp/${RUN_ID}-${RUN_SLUG}-iperf3.json" "${RUN_DIR}/victim/iperf3.json" || true
   else
     warn "Victim iperf3 client did not produce a JSON artifact"
-    if [[ "${KEEP_DEBUG_ARTIFACTS}" == "1" ]]; then
+    if [[ "${DEBUG_ARTIFACTS_ENABLED}" == "1" ]]; then
       fetch_remote_file victim "/tmp/${RUN_ID}-${RUN_SLUG}-iperf3.stdout" "${RUN_DIR}/victim/iperf3.stdout" || true
       fetch_remote_file victim "/tmp/${RUN_ID}-${RUN_SLUG}-iperf3.stderr" "${RUN_DIR}/victim/iperf3.stderr" || true
     fi

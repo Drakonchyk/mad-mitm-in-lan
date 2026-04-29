@@ -6,11 +6,11 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 CAPTURE_PACKET_COUNT="${CAPTURE_PACKET_COUNT:-0}"
 PCAP_RETENTION_POLICY="${PCAP_RETENTION_POLICY:-all}"
-PCAP_ENABLE="${PCAP_ENABLE:-0}"
-PORT_PCAP_ENABLE="${PORT_PCAP_ENABLE:-0}"
+PCAP_ENABLE="${PCAP_ENABLE:-${PCAP:-0}}"
+PORT_PCAP_ENABLE="${PORT_PCAP_ENABLE:-${PORT_PCAP:-0}}"
 PORT_PCAP_ROLES="${PORT_PCAP_ROLES:-gateway victim attacker}"
-GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE:-0}"
-PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE:-0}"
+GUEST_PCAP_ENABLE="${GUEST_PCAP_ENABLE:-${GUEST_PCAP:-0}}"
+PCAP_SUMMARIES_ENABLE="${PCAP_SUMMARIES_ENABLE:-${PCAP_SUMMARIES:-0}}"
 ZEEK_ENABLE="${ZEEK_ENABLE:-1}"
 SURICATA_ENABLE="${SURICATA_ENABLE:-1}"
 DETECTOR_PACKET_SAMPLE_RATE="${DETECTOR_PACKET_SAMPLE_RATE:-1}"
@@ -24,7 +24,18 @@ RELIABILITY_NETEM_CORRUPT_PERCENT="${RELIABILITY_NETEM_CORRUPT_PERCENT:-0}"
 RELIABILITY_TX_IFACE="${RELIABILITY_TX_IFACE:-mitm-rel-tx}"
 RELIABILITY_RX_IFACE="${RELIABILITY_RX_IFACE:-mitm-rel-rx}"
 DETECTOR_HEARTBEAT_SECONDS="${DETECTOR_HEARTBEAT_SECONDS:-10}"
-KEEP_DEBUG_ARTIFACTS="${KEEP_DEBUG_ARTIFACTS:-0}"
+DEBUG_ARTIFACTS_ENABLED="${DEBUG_ARTIFACTS_ENABLED:-${DEBUG:-0}}"
+case "${DEBUG_ARTIFACTS_ENABLED,,}" in
+  1|true|on)
+    DEBUG_ARTIFACTS_ENABLED=1
+    ;;
+  0|false|off|"")
+    DEBUG_ARTIFACTS_ENABLED=0
+    ;;
+  *)
+    DEBUG_ARTIFACTS_ENABLED=0
+    ;;
+esac
 MIN_FREE_MB_FOR_PCAPS="${MIN_FREE_MB_FOR_PCAPS:-2048}"
 STALE_CAPTURE_CLEANUP_ENABLE="${STALE_CAPTURE_CLEANUP_ENABLE:-1}"
 ZEEK_ACTIVE=0
@@ -252,10 +263,10 @@ guard_low_disk_pcap_defaults() {
 
 pcap_requested() {
   case "${PCAP_ENABLE}" in
-    1|true|yes|on|auto)
+    1|true|on)
       return 0
       ;;
-    0|false|no|off)
+    0|false|off)
       return 1
       ;;
     *)
@@ -267,10 +278,10 @@ pcap_requested() {
 
 guest_pcaps_requested() {
   case "${GUEST_PCAP_ENABLE}" in
-    1|true|yes|on)
+    1|true|on)
       return 0
       ;;
-    0|false|no|off)
+    0|false|off)
       return 1
       ;;
     *)
@@ -283,10 +294,10 @@ guest_pcaps_requested() {
 port_pcaps_requested() {
   pcap_requested || return 1
   case "${PORT_PCAP_ENABLE}" in
-    1|true|yes|on)
+    1|true|on)
       return 0
       ;;
-    0|false|no|off)
+    0|false|off)
       return 1
       ;;
     *)
@@ -298,10 +309,10 @@ port_pcaps_requested() {
 
 pcap_summaries_requested() {
   case "${PCAP_SUMMARIES_ENABLE}" in
-    1|true|yes|on)
+    1|true|on)
       return 0
       ;;
-    0|false|no|off)
+    0|false|off)
       return 1
       ;;
     *)
@@ -434,10 +445,10 @@ prepare_victim_detector() {
 
 zeek_requested() {
   case "${ZEEK_ENABLE}" in
-    1|true|yes|on|auto)
+    1|true|on)
       return 0
       ;;
-    0|false|no|off)
+    0|false|off)
       return 1
       ;;
     *)
@@ -449,10 +460,10 @@ zeek_requested() {
 
 suricata_requested() {
   case "${SURICATA_ENABLE}" in
-    1|true|yes|on|auto)
+    1|true|on)
       return 0
       ;;
-    0|false|no|off)
+    0|false|off)
       return 1
       ;;
     *)
@@ -773,7 +784,6 @@ capture_ovs_dhcp_snooping_stats() {
     {
       echo 'generated_at='\"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
       echo 'mode=${mode}'
-      echo 'legacy_enforce=${LAB_DHCP_SNOOPING_ENFORCE:-0}'
       echo 'bridge=${LAB_SWITCH_BRIDGE}'
       echo 'trusted_gateway_ip=${GATEWAY_IP}'
       echo 'trusted_gateway_mac=${GATEWAY_LAB_MAC,,}'
@@ -888,6 +898,21 @@ cleanup_attacker_dns_block_rules() {
     >/dev/null 2>&1 || true
 }
 
+reset_lab_neighbor_state() {
+  local host
+
+  # ARP-family scenarios need a normal dynamic neighbor cache. A permanent
+  # gateway entry on the victim makes it ignore forged ARP replies, so DNS
+  # probes keep going straight to the real gateway and the attacker never sees
+  # spoofable DNS queries.
+  for host in victim attacker; do
+    remote_sudo_bash_lc "${host}" "
+      ip neigh del '${GATEWAY_IP}' dev vnic0 2>/dev/null || true
+      ip neigh flush to '${GATEWAY_IP}' dev vnic0 2>/dev/null || true
+    " >/dev/null 2>&1 || true
+  done
+}
+
 remote_bash_lc() {
   local host="$1"
   local cmd="$2"
@@ -916,7 +941,7 @@ json_escape() {
 
 json_bool() {
   case "${1:-}" in
-    1|true|yes|on)
+    1|true|on)
       printf 'true\n'
       ;;
     *)
@@ -2138,7 +2163,7 @@ capture_victim_zeek_artifacts() {
     cp "${runtime_root}/zeek.stderr" "${outdir}/zeek.stderr" 2>/dev/null || true
   fi
 
-  if [[ "${KEEP_DEBUG_ARTIFACTS}" == "1" ]]; then
+  if [[ "${DEBUG_ARTIFACTS_ENABLED}" == "1" ]]; then
     if [[ -f "${runtime_root}/current/reporter.log" ]]; then
       cp "${runtime_root}/current/reporter.log" "${outdir}/reporter.log" 2>/dev/null || true
     fi
@@ -2188,7 +2213,7 @@ capture_victim_suricata_artifacts() {
     cp "${runtime_root}/suricata.stderr" "${outdir}/suricata.stderr" 2>/dev/null || true
   fi
 
-  if [[ "${KEEP_DEBUG_ARTIFACTS}" == "1" ]]; then
+  if [[ "${DEBUG_ARTIFACTS_ENABLED}" == "1" ]]; then
     if [[ -f "${runtime_root}/current/fast.log" ]]; then
       cp "${runtime_root}/current/fast.log" "${outdir}/fast.log" 2>/dev/null || true
     fi
@@ -2217,7 +2242,7 @@ capture_victim_suricata_artifacts() {
 prune_run_artifacts() {
   prune_run_pcaps_for_policy
 
-  if [[ "${KEEP_DEBUG_ARTIFACTS}" == "1" ]]; then
+  if [[ "${DEBUG_ARTIFACTS_ENABLED}" == "1" ]]; then
     return 0
   fi
 
@@ -2237,7 +2262,7 @@ evaluate_saved_run() {
 
 upsert_results_db() {
   local compact_arg=()
-  if [[ "${KEEP_DEBUG_ARTIFACTS}" != "1" ]]; then
+  if [[ "${DEBUG_ARTIFACTS_ENABLED}" != "1" ]]; then
     compact_arg=(--compact)
   fi
   lab_python_module metrics.results_db upsert-run "${RUN_DIR}" "${compact_arg[@]}" >/dev/null
@@ -2245,7 +2270,7 @@ upsert_results_db() {
 
 write_summary() {
   local target="${1:-${RUN_DIR}}"
-  if [[ "${KEEP_DEBUG_ARTIFACTS}" == "1" ]]; then
+  if [[ "${DEBUG_ARTIFACTS_ENABLED}" == "1" ]]; then
     lab_python_module metrics.summary_cli "${target}" | tee "${target}/summary.txt"
   else
     lab_python_module metrics.summary_cli "${target}"

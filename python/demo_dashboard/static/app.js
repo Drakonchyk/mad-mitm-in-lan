@@ -33,12 +33,16 @@ let cachedScenarios = [];
 let busy = false;
 let selectedScenario = "";
 let activeResultsDbTab = "overview";
+let refreshInFlight = false;
 
 function scenarioByName(name) {
   return cachedScenarios.find((scenario) => scenario.name === name);
 }
 
 function setMessage(text, tone = "muted") {
+  if (!messageBar) {
+    return;
+  }
   messageBar.className = `message ${tone}`;
   messageBar.textContent = text;
 }
@@ -89,7 +93,7 @@ function selectedScenarioLabel() {
     return "";
   }
   if (selectedScenario === "reliability") {
-    return reliabilityScenarioName() === "reliability-dhcp-spoof" ? "Reliability DHCP Rogue" : "Reliability ARP + DNS";
+    return reliabilityScenarioName() === "reliability-dhcp-spoof" ? "Reliability DHCP" : "Reliability ARP + DNS";
   }
   return scenarioByName(selectedScenario)?.label || selectedScenario;
 }
@@ -213,6 +217,11 @@ function badge(label, running) {
   return `<span class="badge"><span class="${lightClass(running)}"></span>${label}</span>`;
 }
 
+function statusBadge(label, tone = "idle") {
+  const light = tone === "ok" ? "light ok" : tone === "warn" ? "light warn" : "light";
+  return `<span class="badge"><span class="${light}"></span>${label}</span>`;
+}
+
 function formatMetric(value, digits = 2) {
   if (value === null || value === undefined || value === "") {
     return "—";
@@ -244,6 +253,85 @@ function formatLossLevels(raw) {
     .sort((a, b) => a - b)
     .map((value) => `${value}%`)
     .join(", ");
+}
+
+function displayPathName(path) {
+  if (!path) {
+    return "";
+  }
+  const parts = String(path).split("/");
+  return parts[parts.length - 1] || path;
+}
+
+function displayAttackType(type) {
+  const labels = {
+    arp_spoof: "ARP spoof",
+    dns_spoof: "DNS spoof",
+    dhcp_spoof: "DHCP spoof",
+    dhcp_rogue_server: "DHCP spoof",
+    icmp_redirect: "ICMP redirect",
+    dhcp_untrusted_switch_port: "DHCP switch-port",
+    dns_source_violation: "DNS switch-port",
+  };
+  return labels[type] || String(type || "").replaceAll("_", " ");
+}
+
+function isArpAttackType(type) {
+  return type === "arp_spoof";
+}
+
+function detectedMark(value) {
+  return Number(value || 0) > 0 ? "✓" : "✗";
+}
+
+function detectionClass(value) {
+  return Number(value || 0) > 0 ? "detect-yes" : "detect-no";
+}
+
+function formatAttackValue(type, value) {
+  if (isArpAttackType(type)) {
+    return detectedMark(value);
+  }
+  return value;
+}
+
+function formatAttackCounts(counts) {
+  const entries = Object.entries(counts || {});
+  if (!entries.length) {
+    return "none";
+  }
+  return entries.map(([key, value]) => `${displayAttackType(key)}=${formatAttackValue(key, value)}`).join(", ");
+}
+
+function nonArpAttackPacketTotal(counts) {
+  return Object.entries(counts || {})
+    .filter(([key]) => !isArpAttackType(key))
+    .reduce((total, [, value]) => total + Number(value || 0), 0);
+}
+
+function arpAttackPresent(counts) {
+  return Number((counts || {}).arp_spoof || 0) > 0;
+}
+
+function sensorSummaryValue(counts, fallbackTotal) {
+  const nonArpPackets = nonArpAttackPacketTotal(counts || {});
+  if (nonArpPackets > 0) {
+    return nonArpPackets;
+  }
+  if (Object.prototype.hasOwnProperty.call(counts || {}, "arp_spoof")) {
+    return detectedMark(arpAttackPresent(counts || {}));
+  }
+  return Number(fallbackTotal || 0) > 0 ? fallbackTotal : "✗";
+}
+
+function sensorSummaryClass(counts) {
+  if (nonArpAttackPacketTotal(counts || {}) > 0) {
+    return "";
+  }
+  if (Object.prototype.hasOwnProperty.call(counts || {}, "arp_spoof")) {
+    return detectionClass(arpAttackPresent(counts || {}));
+  }
+  return "";
 }
 
 function renderLabStatus(lab, facts) {
@@ -333,33 +421,53 @@ function renderJobStatus(jobState) {
   document.getElementById("jobStatus").innerHTML = parts.join("");
 }
 
-function renderLatestResult(latest) {
+function renderLatestResult(latest, activeRun = null) {
   const container = document.getElementById("latestResult");
+  if (activeRun) {
+    downloadLatestRun.disabled = true;
+    container.innerHTML = `
+      <div><strong>${activeRun.label || activeRun.scenario || "Scenario"}</strong></div>
+      <div class="muted">${activeRun.scenario || ""}</div>
+      <div class="stack compact">
+        <div class="row"><span class="muted">State</span>${statusBadge("running", "ok")}</div>
+        <div class="row"><span class="muted">Started</span><strong>${activeRun.started_at || "—"}</strong></div>
+        <div class="row"><span class="muted">Duration</span><strong>${activeRun.duration ? `${activeRun.duration}s` : "—"}</strong></div>
+        <div class="muted">Saved metrics will appear when the run finishes.</div>
+      </div>
+    `;
+    return;
+  }
   downloadLatestRun.disabled = !latest || !latest.path || latest.can_download === false;
   if (!latest || !latest.path) {
     container.innerHTML = `<div class="muted">No saved run yet.</div>`;
     return;
   }
-  const gtTypes = Object.entries(latest.ground_truth_attack_types || {}).map(([key, value]) => `${key}=${value}`).join(", ") || "none";
+  const gtTypes = formatAttackCounts(latest.ground_truth_attack_types || {});
+  const nonArpTruthPackets = nonArpAttackPacketTotal(latest.ground_truth_attack_types || {});
+  const arpTruth = arpAttackPresent(latest.ground_truth_attack_types || {});
+  const switchOnlyTypes = formatAttackCounts(latest.switch_only_attack_types || {});
   const arpDirections = Object.entries(latest.ground_truth_arp_spoof_direction_counts || {})
     .filter(([, value]) => Number(value) > 0)
     .map(([key, value]) => `${key}=${value}`).join(", ");
-  const detectorTypes = Object.entries(latest.detector_attack_type_counts || {}).map(([key, value]) => `${key}=${value}`).join(", ") || "none";
-  const zeekTypes = Object.entries(latest.zeek_attack_type_counts || {}).map(([key, value]) => `${key}=${value}`).join(", ") || "none";
-  const suricataTypes = Object.entries(latest.suricata_attack_type_counts || {}).map(([key, value]) => `${key}=${value}`).join(", ") || "none";
+  const detectorTypes = formatAttackCounts(latest.detector_attack_type_counts || {});
+  const zeekTypes = formatAttackCounts(latest.zeek_attack_type_counts || {});
+  const suricataTypes = formatAttackCounts(latest.suricata_attack_type_counts || {});
   container.innerHTML = `
-    <div><strong>${latest.scenario || latest.path}</strong></div>
-    <div class="muted">${latest.summary_path || latest.path || ""}</div>
-    ${latest.can_download === false ? `<div class="inline-help">Compact DB row only; raw run files were not retained.</div>` : ""}
+    <div><strong>${latest.scenario || displayPathName(latest.path)}</strong></div>
+    <div class="muted">${latest.run_id || displayPathName(latest.path) || ""}${latest.started_at ? ` · ${latest.started_at}` : ""}</div>
     <div class="stack compact">
-      <div class="row"><span class="muted">Ground truth</span><strong>${latest.ground_truth_attack_events ?? "—"} pkts</strong></div>
+      <div class="row">
+        <span class="muted">${nonArpTruthPackets > 0 ? "Ground-truth packets" : "ARP ground truth"}</span>
+        <strong class="${nonArpTruthPackets > 0 ? "" : detectionClass(arpTruth)}">${nonArpTruthPackets > 0 ? `${nonArpTruthPackets} pkts` : detectedMark(arpTruth)}</strong>
+      </div>
       <div class="muted">Types: ${gtTypes}</div>
+      ${switchOnlyTypes !== "none" ? `<div class="muted">Switch-only: ${switchOnlyTypes}</div>` : ""}
       ${arpDirections ? `<div class="muted">ARP directions: ${arpDirections}</div>` : ""}
-      <div class="row"><span class="muted">Detector</span><strong>${latest.detector_alert_events ?? "—"}</strong></div>
+      <div class="row"><span class="muted">Detector</span><strong class="${sensorSummaryClass(latest.detector_attack_type_counts || {})}">${sensorSummaryValue(latest.detector_attack_type_counts || {}, latest.detector_alert_events)}</strong></div>
       <div class="muted">Types: ${detectorTypes}</div>
-      <div class="row"><span class="muted">Zeek</span><strong>${latest.zeek_alert_events ?? "—"}</strong></div>
+      <div class="row"><span class="muted">Zeek</span><strong class="${sensorSummaryClass(latest.zeek_attack_type_counts || {})}">${sensorSummaryValue(latest.zeek_attack_type_counts || {}, latest.zeek_alert_events)}</strong></div>
       <div class="muted">Types: ${zeekTypes}</div>
-      <div class="row"><span class="muted">Suricata</span><strong>${latest.suricata_alert_events ?? "—"}</strong></div>
+      <div class="row"><span class="muted">Suricata</span><strong class="${sensorSummaryClass(latest.suricata_attack_type_counts || {})}">${sensorSummaryValue(latest.suricata_attack_type_counts || {}, latest.suricata_alert_events)}</strong></div>
       <div class="muted">Types: ${suricataTypes}</div>
     </div>
   `;
@@ -377,11 +485,14 @@ function renderResultsDbSummary(summary) {
   const sensors = summary.sensor_totals || {};
   const sensorRows = ["detector", "zeek", "suricata"].map((name) => {
     const sensor = sensors[name] || {};
+    const detail = name === "detector"
+      ? `max ${formatMetric(sensor.max_processed_pps, 1)} pps`
+      : "packet alerts";
     return `
       <div class="mini-metric">
         <div class="label">${name}</div>
         <div class="value">${sensor.alerts ?? 0}</div>
-        <div class="muted">ttd ${formatMetric(sensor.avg_ttd_seconds)}s · max ${formatMetric(sensor.max_processed_pps, 1)} pps</div>
+        <div class="muted">${detail}</div>
       </div>
     `;
   }).join("");
@@ -409,19 +520,23 @@ function renderResultsDbSummary(summary) {
       <td class="num">${formatMetric(row.detector_alerts_avg, 1)}</td>
       <td class="num">${formatMetric(row.zeek_alerts_avg, 1)}</td>
       <td class="num">${formatMetric(row.suricata_alerts_avg, 1)}</td>
-      <td class="num">${formatMetric(row.detector_ttd_avg, 3)}</td>
-      <td class="num">${formatMetric(row.zeek_ttd_avg, 3)}</td>
-      <td class="num">${formatMetric(row.suricata_ttd_avg, 3)}</td>
     </tr>
   `).join("");
   const attackRows = (summary.attack_types || []).map((row) => `
     <tr>
       <td><strong>${escapeHtml(row.label || row.scenario)}</strong></td>
-      <td>${escapeHtml(row.attack_type)}</td>
-      <td class="num">${row.truth_count ?? 0}</td>
-      <td class="num">${row.detector_count ?? 0}</td>
-      <td class="num">${row.zeek_count ?? 0}</td>
-      <td class="num">${row.suricata_count ?? 0}</td>
+      <td>${escapeHtml(displayAttackType(row.attack_type))}</td>
+      ${isArpAttackType(row.attack_type) ? `
+        <td class="num ${detectionClass(row.truth_count)}">${detectedMark(row.truth_count)}</td>
+        <td class="num ${detectionClass(row.detector_count)}">${detectedMark(row.detector_count)}</td>
+        <td class="num ${detectionClass(row.zeek_count)}">${detectedMark(row.zeek_count)}</td>
+        <td class="num ${detectionClass(row.suricata_count)}">${detectedMark(row.suricata_count)}</td>
+      ` : `
+        <td class="num">${row.truth_count ?? 0}</td>
+        <td class="num">${row.detector_count ?? 0}</td>
+        <td class="num">${row.zeek_count ?? 0}</td>
+        <td class="num">${row.suricata_count ?? 0}</td>
+      `}
     </tr>
   `).join("");
   const recentRows = (summary.recent_runs || []).map((row) => `
@@ -473,8 +588,8 @@ function renderResultsDbSummary(summary) {
     loss: `
       <div class="db-table-wrap">
         <table class="db-table">
-          <thead><tr><th>Scenario</th><th>Loss</th><th>Runs</th><th>D avg</th><th>Z avg</th><th>S avg</th><th>D TTD</th><th>Z TTD</th><th>S TTD</th></tr></thead>
-          <tbody>${lossRows || `<tr><td colspan="9" class="muted">No reliability loss rows yet.</td></tr>`}</tbody>
+          <thead><tr><th>Scenario</th><th>Loss</th><th>Runs</th><th>D avg</th><th>Z avg</th><th>S avg</th></tr></thead>
+          <tbody>${lossRows || `<tr><td colspan="6" class="muted">No reliability loss rows yet.</td></tr>`}</tbody>
         </table>
       </div>
     `,
@@ -497,7 +612,6 @@ function renderResultsDbSummary(summary) {
   };
 
   container.innerHTML = `
-    <div class="inline-help">Live view of <code>${escapeHtml(summary.path || "results/experiment-results.sqlite")}</code>. It refreshes with the rest of the dashboard.</div>
     <div class="db-tab-buttons" role="tablist" aria-label="Results database tables">${tabButtons}</div>
     <div class="db-tab-panel">${tables[activeResultsDbTab] || tables.overview}</div>
   `;
@@ -511,14 +625,13 @@ function renderResultsDbSummary(summary) {
 }
 
 function renderToolCard(toolKey, tool) {
-  const latest = window.__latestResult || null;
-  const arpDirectionNote = window.__sensorNotes?.arp_direction_note && latest?.scenario?.includes("arp");
+  tool = tool || { name: toolKey, running: false, counters: {} };
   const lastEvent = tool.last_event;
   const counters = tool.counters || {};
   const metrics = Object.entries(counters).map(([key, value]) => `
     <div class="mini-metric">
-      <div class="label">${key.replaceAll("_", " ")}</div>
-      <div class="value">${value}</div>
+      <div class="label">${displayAttackType(key)}</div>
+      <div class="value ${isArpAttackType(key) ? detectionClass(value) : ""}">${formatAttackValue(key, value)}</div>
     </div>
   `).join("");
 
@@ -537,13 +650,28 @@ function renderToolCard(toolKey, tool) {
         <div class="muted">${lastEvent?.timestamp || "No recent event"}</div>
         <div>${lastEvent?.summary || "Waiting for live data."}</div>
       </div>
-      ${arpDirectionNote ? `<div class="inline-help">ARP note: this card counts one poisoning direction, while switch ground truth may include both gateway-to-victim and victim-to-gateway replies.</div>` : ""}
       ${metrics ? `<div class="tool-counters">${metrics}</div>` : ""}
     </div>
   `;
 }
 
-function renderGroundTruthCard(latest) {
+function renderGroundTruthCard(latest, activeRun = null) {
+  if (activeRun) {
+    toolCards.groundTruth.innerHTML = `
+      <div class="tool-header">
+        <div>
+          <h2>Ground Truth</h2>
+          <div class="muted">${activeRun.label || activeRun.scenario || "Scenario running"}</div>
+        </div>
+        ${statusBadge("pending", "warn")}
+      </div>
+      <div class="stack compact">
+        <div class="row"><span class="muted">Current run</span><strong>${activeRun.scenario || "—"}</strong></div>
+        <div class="row"><span class="muted">Started</span><strong>${activeRun.started_at || "—"}</strong></div>
+      </div>
+    `;
+    return;
+  }
   if (!latest || !latest.path) {
     toolCards.groundTruth.innerHTML = `
       <div class="tool-header">
@@ -555,21 +683,25 @@ function renderGroundTruthCard(latest) {
   }
   const metrics = Object.entries(latest.ground_truth_attack_types || {}).map(([key, value]) => `
     <div class="mini-metric">
-      <div class="label">${key.replaceAll("_", " ")}</div>
-      <div class="value">${value}</div>
+      <div class="label">${displayAttackType(key)}</div>
+      <div class="value ${isArpAttackType(key) ? detectionClass(value) : ""}">${formatAttackValue(key, value)}</div>
     </div>
   `).join("");
+  const nonArpTruthPackets = nonArpAttackPacketTotal(latest.ground_truth_attack_types || {});
+  const arpTruth = arpAttackPresent(latest.ground_truth_attack_types || {});
   const arpDirections = Object.entries(latest.ground_truth_arp_spoof_direction_counts || {}).map(([key, value]) => `${key}=${value}`).join(", ");
   toolCards.groundTruth.innerHTML = `
     <div class="tool-header">
       <div>
         <h2>Ground Truth (Switch)</h2>
-        <div class="muted">${latest.scenario || latest.path}</div>
+        <div class="muted">${latest.scenario || displayPathName(latest.path)}${latest.started_at ? ` · ${latest.started_at}` : ""}</div>
       </div>
     </div>
     <div class="stack compact">
-      <div class="inline-help">Counts here come from the mirrored switch view and represent matched attack packets on the wire.</div>
-      <div class="row"><span class="muted">Matched packets</span><strong>${latest.ground_truth_attack_events ?? "—"}</strong></div>
+      <div class="row">
+        <span class="muted">${nonArpTruthPackets > 0 ? "Matched packets" : "ARP attack"}</span>
+        <strong class="${nonArpTruthPackets > 0 ? "" : detectionClass(arpTruth)}">${nonArpTruthPackets > 0 ? nonArpTruthPackets : detectedMark(arpTruth)}</strong>
+      </div>
       <div class="row"><span class="muted">Attack duration</span><strong>${latest.ground_truth_attack_duration_seconds ? `${latest.ground_truth_attack_duration_seconds.toFixed(2)}s` : "—"}</strong></div>
       ${arpDirections ? `<div class="muted">ARP directions: ${arpDirections}</div>` : ""}
       ${metrics ? `<div class="tool-counters">${metrics}</div>` : ""}
@@ -645,22 +777,31 @@ document.querySelectorAll("[data-action]").forEach((button) => {
 async function refreshStatus() {
   const payload = await fetchJson("/api/status");
   window.__latestResult = payload.latest_result || null;
-  window.__sensorNotes = payload.sensor_notes || {};
   cachedScenarios = payload.scenarios || [];
+  const activeRun = payload.active_run || null;
+  const tools = payload.tools || {};
   renderScenarioButtons();
   renderLabStatus(payload.lab || {}, payload.lab_facts || {});
   renderJobStatus(payload.job || {});
-  renderLatestResult(payload.latest_result || {});
+  renderLatestResult(payload.latest_result || {}, activeRun);
   renderResultsDbSummary(payload.results_db || {});
-  renderGroundTruthCard(payload.latest_result || null);
-  renderToolCard("detector", payload.tools.detector);
-  renderToolCard("zeek", payload.tools.zeek);
-  renderToolCard("suricata", payload.tools.suricata);
+  renderGroundTruthCard(payload.latest_result || null, activeRun);
+  renderToolCard("detector", tools.detector);
+  renderToolCard("zeek", tools.zeek);
+  renderToolCard("suricata", tools.suricata);
 }
 
 async function refreshAll() {
-  await refreshStatus();
-  await refreshLogs();
+  if (refreshInFlight) {
+    return;
+  }
+  refreshInFlight = true;
+  try {
+    await refreshStatus();
+    await refreshLogs();
+  } finally {
+    refreshInFlight = false;
+  }
 }
 
 syncDurationInputs(30);

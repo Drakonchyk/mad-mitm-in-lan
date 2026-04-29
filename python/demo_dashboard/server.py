@@ -40,6 +40,7 @@ ZEEK_PID = Path("/tmp/mitm-lab-zeek-host/zeek.pid")
 SURICATA_LOG = Path("/tmp/mitm-lab-suricata-host/current/eve.json")
 SURICATA_PID = Path("/tmp/mitm-lab-suricata-host/suricata.pid")
 RESULTS_DB = REPO_ROOT / "results" / "experiment-results.sqlite"
+COMPARABLE_ATTACK_TYPES = {"arp_spoof", "dns_spoof", "dhcp_rogue_server", "icmp_redirect"}
 
 SCENARIO_SCRIPTS = {
     "arp-poison-no-forward": REPO_ROOT / "shell/scenarios/record-arp-poison-no-forward.sh",
@@ -189,6 +190,53 @@ def load_jsonl_all(path: Path, max_bytes: int = 1024 * 1024) -> list[dict[str, A
     return entries
 
 
+def parse_event_datetime(value: Any) -> datetime | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), timezone.utc)
+    text = str(value)
+    try:
+        return datetime.fromtimestamp(float(text), timezone.utc)
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def records_since(
+    records: list[dict[str, Any]],
+    timestamp_keys: tuple[str, ...],
+    since: str | None,
+    until: str | None = None,
+) -> list[dict[str, Any]]:
+    since_dt = parse_event_datetime(since)
+    until_dt = parse_event_datetime(until)
+    if since_dt is None and until_dt is None:
+        return records
+    filtered: list[dict[str, Any]] = []
+    for record in records:
+        event_dt = None
+        for key in timestamp_keys:
+            event_dt = parse_event_datetime(record.get(key))
+            if event_dt is not None:
+                break
+        if event_dt is None:
+            filtered.append(record)
+            continue
+        if since_dt is not None and event_dt < since_dt:
+            continue
+        if until_dt is not None and event_dt > until_dt:
+            continue
+        filtered.append(record)
+    return filtered
+
+
 def summarize_detector_entry(entry: dict[str, Any]) -> str:
     event = entry.get("event", "unknown")
     if event == "heartbeat":
@@ -208,7 +256,7 @@ def summarize_detector_entry(entry: dict[str, Any]) -> str:
             f"assigned {entry.get('assigned_ip')}"
         )
     if event == "rogue_dhcp_server_seen":
-        return f"Rogue DHCP server {entry.get('dhcp_server')} ({entry.get('dhcp_server_mac')})"
+        return f"DHCP spoof server {entry.get('dhcp_server')} ({entry.get('dhcp_server_mac')})"
     if event == "gateway_mac_changed":
         return f"Gateway MAC changed to {entry.get('gateway_mac')}"
     if event == "multiple_gateway_macs_seen":
@@ -237,7 +285,10 @@ def summarize_suricata_entry(entry: dict[str, Any]) -> str:
         )
     if event_type == "dns":
         dns = entry.get("dns", {})
-        rrname = dns.get("rrname") or dns.get("query", [{}])[0].get("rrname") if isinstance(dns.get("query"), list) else None
+        rrname = dns.get("rrname")
+        query = dns.get("query")
+        if not rrname and isinstance(query, list) and query:
+            rrname = query[0].get("rrname")
         return f"DNS {dns.get('type', '').upper() or 'event'} {rrname or ''}".strip()
     if event_type == "dhcp":
         dhcp = entry.get("dhcp", {})
@@ -247,8 +298,8 @@ def summarize_suricata_entry(entry: dict[str, Any]) -> str:
     return json.dumps(entry, sort_keys=True)
 
 
-def interesting_detector_entries(limit: int = 25) -> list[dict[str, Any]]:
-    records = load_jsonl_tail(DETECTOR_LOG, limit=limit * 3)
+def interesting_detector_entries(limit: int = 25, since: str | None = None, until: str | None = None) -> list[dict[str, Any]]:
+    records = records_since(load_jsonl_tail(DETECTOR_LOG, limit=limit * 6), ("ts",), since, until)
     filtered = [entry for entry in records if entry.get("event") != "heartbeat"]
     chosen = filtered[-limit:] if filtered else records[-limit:]
     return [
@@ -262,8 +313,8 @@ def interesting_detector_entries(limit: int = 25) -> list[dict[str, Any]]:
     ]
 
 
-def interesting_zeek_entries(limit: int = 25) -> list[dict[str, Any]]:
-    records = load_jsonl_tail(ZEEK_LOG, limit=limit)
+def interesting_zeek_entries(limit: int = 25, since: str | None = None, until: str | None = None) -> list[dict[str, Any]]:
+    records = records_since(load_jsonl_tail(ZEEK_LOG, limit=limit * 3), ("ts",), since, until)
     return [
         {
             "timestamp": entry.get("ts"),
@@ -275,11 +326,11 @@ def interesting_zeek_entries(limit: int = 25) -> list[dict[str, Any]]:
     ]
 
 
-def interesting_suricata_entries(limit: int = 25) -> list[dict[str, Any]]:
+def interesting_suricata_entries(limit: int = 25, since: str | None = None, until: str | None = None) -> list[dict[str, Any]]:
     interesting_types = {"alert", "arp", "dns", "dhcp", "icmp"}
     records = [
         entry
-        for entry in load_jsonl_tail(SURICATA_LOG, limit=limit * 8)
+        for entry in records_since(load_jsonl_all(SURICATA_LOG, max_bytes=4 * 1024 * 1024), ("timestamp",), since, until)
         if entry.get("event_type") in interesting_types
     ]
     return [
@@ -293,14 +344,14 @@ def interesting_suricata_entries(limit: int = 25) -> list[dict[str, Any]]:
     ]
 
 
-def detector_status() -> dict[str, Any]:
+def detector_status(since: str | None = None, until: str | None = None) -> dict[str, Any]:
     pid = read_pid(DETECTOR_PID)
     state = load_json_file(DETECTOR_STATE) or {}
-    records = load_jsonl_all(DETECTOR_LOG)
+    records = records_since(load_jsonl_all(DETECTOR_LOG), ("ts",), since, until)
     arp_count = sum(1 for entry in records if entry.get("event") == "arp_spoof_packet_seen")
     dns_count = sum(1 for entry in records if entry.get("event") == "dns_spoof_packet_seen")
-    dhcp_count = sum(1 for entry in records if entry.get("event") in {"dhcp_offer_seen", "dhcp_ack_seen"})
-    recent = interesting_detector_entries(limit=1)
+    dhcp_count = sum(1 for entry in records if entry.get("event") == "rogue_dhcp_server_seen")
+    recent = interesting_detector_entries(limit=1, since=since, until=until)
     return {
         "name": "Detector",
         "running": pid_running(pid),
@@ -318,9 +369,9 @@ def detector_status() -> dict[str, Any]:
     }
 
 
-def zeek_status() -> dict[str, Any]:
+def zeek_status(since: str | None = None, until: str | None = None) -> dict[str, Any]:
     pid = read_pid(ZEEK_PID)
-    records = load_jsonl_all(ZEEK_LOG)
+    records = records_since(load_jsonl_all(ZEEK_LOG), ("ts",), since, until)
     counts = {"arp_spoof": 0, "dns_spoof": 0, "dhcp_spoof": 0}
     for entry in records:
         note = entry.get("note")
@@ -330,7 +381,7 @@ def zeek_status() -> dict[str, Any]:
             counts["dns_spoof"] += 1
         elif note == "MITMLab::DHCP_Spoof":
             counts["dhcp_spoof"] += 1
-    recent = interesting_zeek_entries(limit=1)
+    recent = interesting_zeek_entries(limit=1, since=since, until=until)
     return {
         "name": "Zeek",
         "running": pid_running(pid),
@@ -341,11 +392,11 @@ def zeek_status() -> dict[str, Any]:
     }
 
 
-def suricata_status() -> dict[str, Any]:
+def suricata_status(since: str | None = None, until: str | None = None) -> dict[str, Any]:
     pid = read_pid(SURICATA_PID)
     attacker_mac = LAB_CONSTANTS.get("ATTACKER_MAC", "").lower()
     gateway_ip = LAB_CONSTANTS.get("GATEWAY_IP", "")
-    records = load_jsonl_all(SURICATA_LOG, max_bytes=2 * 1024 * 1024)
+    records = records_since(load_jsonl_all(SURICATA_LOG, max_bytes=4 * 1024 * 1024), ("timestamp",), since, until)
     counts = {"arp_spoof": 0, "dns_spoof": 0, "dhcp_spoof": 0}
     for entry in records:
         event_type = entry.get("event_type")
@@ -353,7 +404,7 @@ def suricata_status() -> dict[str, Any]:
             signature = entry.get("alert", {}).get("signature", "")
             if "DNS answer contains attacker IP" in signature:
                 counts["dns_spoof"] += 1
-            elif "rogue DHCP reply from attacker" in signature:
+            elif "rogue DHCP reply from attacker" in signature or "rogue DHCP reply from non-gateway server" in signature:
                 counts["dhcp_spoof"] += 1
         elif event_type == "arp":
             arp = entry.get("arp", {})
@@ -363,7 +414,7 @@ def suricata_status() -> dict[str, Any]:
                 and str(arp.get("src_ip", "")) == gateway_ip
             ):
                 counts["arp_spoof"] += 1
-    recent = interesting_suricata_entries(limit=1)
+    recent = interesting_suricata_entries(limit=1, since=since, until=until)
     return {
         "name": "Suricata",
         "running": pid_running(pid),
@@ -381,7 +432,7 @@ def pretty_label(name: str) -> str:
         "arp-mitm-dns": "ARP + DNS MITM",
         "dhcp-spoof": "DHCP Spoof",
         "reliability-arp-mitm-dns": "Reliability ARP + DNS",
-        "reliability-dhcp-spoof": "Reliability DHCP Rogue",
+        "reliability-dhcp-spoof": "Reliability DHCP",
     }
     return custom.get(name, name.replace("-", " ").title())
 
@@ -459,8 +510,9 @@ def latest_result_from_db() -> dict[str, Any] | None:
             db.row_factory = sqlite3.Row
             run = db.execute(
                 """
-                SELECT run_id, run_dir, scenario, ground_truth_source,
-                       detector_alert_events, zeek_alert_events, suricata_alert_events
+                SELECT run_id, run_dir, scenario, started_at, ground_truth_source,
+                       detector_alert_events, zeek_alert_events, suricata_alert_events,
+                       raw_artifacts_retained
                 FROM runs
                 ORDER BY started_at DESC, run_id DESC
                 LIMIT 1
@@ -469,12 +521,22 @@ def latest_result_from_db() -> dict[str, Any] | None:
             if run is None:
                 return None
             truth_rows = db.execute(
-                "SELECT attack_type, truth_count FROM truth_counts WHERE run_id = ?",
-                (run["run_id"],),
+                "SELECT attack_type, truth_count FROM truth_counts WHERE run_id = ? AND attack_type IN ({})".format(
+                    ",".join("?" for _ in COMPARABLE_ATTACK_TYPES)
+                ),
+                (run["run_id"], *sorted(COMPARABLE_ATTACK_TYPES)),
+            ).fetchall()
+            switch_truth_rows = db.execute(
+                "SELECT attack_type, truth_count FROM truth_counts WHERE run_id = ? AND attack_type NOT IN ({})".format(
+                    ",".join("?" for _ in COMPARABLE_ATTACK_TYPES)
+                ),
+                (run["run_id"], *sorted(COMPARABLE_ATTACK_TYPES)),
             ).fetchall()
             sensor_rows = db.execute(
-                "SELECT sensor, attack_type, alert_count FROM sensor_counts WHERE run_id = ?",
-                (run["run_id"],),
+                "SELECT sensor, attack_type, alert_count FROM sensor_counts WHERE run_id = ? AND attack_type IN ({})".format(
+                    ",".join("?" for _ in COMPARABLE_ATTACK_TYPES)
+                ),
+                (run["run_id"], *sorted(COMPARABLE_ATTACK_TYPES)),
             ).fetchall()
     except sqlite3.Error:
         return None
@@ -490,23 +552,59 @@ def latest_result_from_db() -> dict[str, Any] | None:
             sensor_counts[sensor][str(row["attack_type"])] = int(row["alert_count"])
 
     run_dir = Path(str(run["run_dir"]))
+    can_download = bool(run["raw_artifacts_retained"]) and run_dir.exists() and any(run_dir.iterdir())
     return {
         "path": str(run_dir),
-        "can_download": run_dir.exists(),
+        "run_id": run["run_id"],
+        "started_at": run["started_at"],
+        "can_download": can_download,
         "summary_path": None,
         "scenario": run["scenario"],
         "ground_truth_source": run["ground_truth_source"],
         "ground_truth_attack_events": sum(int(row["truth_count"]) for row in truth_rows),
         "ground_truth_attack_types": {str(row["attack_type"]): int(row["truth_count"]) for row in truth_rows},
+        "switch_only_attack_events": sum(int(row["truth_count"]) for row in switch_truth_rows),
+        "switch_only_attack_types": {str(row["attack_type"]): int(row["truth_count"]) for row in switch_truth_rows},
         "ground_truth_arp_spoof_direction_counts": {},
         "ground_truth_attack_duration_seconds": None,
-        "detector_alert_events": run["detector_alert_events"],
+        "detector_alert_events": sum(sensor_counts["detector"].values()),
         "detector_attack_type_counts": sensor_counts["detector"],
-        "zeek_alert_events": run["zeek_alert_events"],
+        "zeek_alert_events": sum(sensor_counts["zeek"].values()),
         "zeek_attack_type_counts": sensor_counts["zeek"],
-        "suricata_alert_events": run["suricata_alert_events"],
+        "suricata_alert_events": sum(sensor_counts["suricata"].values()),
         "suricata_attack_type_counts": sensor_counts["suricata"],
     }
+
+
+def latest_run_window_from_db() -> tuple[str | None, str | None]:
+    if not RESULTS_DB.exists():
+        return None, None
+    try:
+        with sqlite3.connect(RESULTS_DB) as db:
+            row = db.execute("SELECT started_at, ended_at FROM runs ORDER BY started_at DESC, run_id DESC LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return None, None
+    if not row:
+        return None, None
+    return str(row[0]) if row[0] else None, str(row[1]) if row[1] else None
+
+
+def dashboard_attack_counters(counts: dict[str, Any]) -> dict[str, int]:
+    return {
+        "arp_spoof": int(counts.get("arp_spoof", 0) or 0),
+        "dns_spoof": int(counts.get("dns_spoof", 0) or 0),
+        "dhcp_spoof": int(counts.get("dhcp_spoof", 0) or 0) + int(counts.get("dhcp_rogue_server", 0) or 0),
+    }
+
+
+def fill_idle_tool_counters_from_db(tools: dict[str, dict[str, Any]], latest_result: dict[str, Any] | None) -> None:
+    if not latest_result:
+        return
+    for key in ("detector", "zeek", "suricata"):
+        live_counters = tools.get(key, {}).get("counters", {})
+        db_counters = dashboard_attack_counters(latest_result.get(f"{key}_attack_type_counts", {}))
+        if sum(int(value or 0) for value in live_counters.values()) == 0 and sum(db_counters.values()) > 0:
+            tools[key]["counters"] = db_counters
 
 
 def results_db_summary() -> dict[str, Any]:
@@ -540,12 +638,7 @@ def results_db_summary() -> dict[str, Any]:
                        COALESCE(SUM(detector_alert_events), 0) AS detector_alerts,
                        COALESCE(SUM(zeek_alert_events), 0) AS zeek_alerts,
                        COALESCE(SUM(suricata_alert_events), 0) AS suricata_alerts,
-                       AVG(detector_supported_ttd_seconds) AS detector_avg_ttd,
-                       AVG(zeek_supported_ttd_seconds) AS zeek_avg_ttd,
-                       AVG(suricata_supported_ttd_seconds) AS suricata_avg_ttd,
-                       MAX(detector_max_processed_pps) AS detector_max_pps,
-                       MAX(zeek_max_processed_pps) AS zeek_max_pps,
-                       MAX(suricata_max_processed_pps) AS suricata_max_pps
+                       MAX(detector_max_processed_pps) AS detector_max_pps
                 FROM runs
                 """
             ).fetchone()
@@ -572,10 +665,7 @@ def results_db_summary() -> dict[str, Any]:
                        COUNT(*) AS run_count,
                        AVG(detector_alert_events) AS detector_alerts_avg,
                        AVG(zeek_alert_events) AS zeek_alerts_avg,
-                       AVG(suricata_alert_events) AS suricata_alerts_avg,
-                       AVG(detector_supported_ttd_seconds) AS detector_ttd_avg,
-                       AVG(zeek_supported_ttd_seconds) AS zeek_ttd_avg,
-                       AVG(suricata_supported_ttd_seconds) AS suricata_ttd_avg
+                       AVG(suricata_alert_events) AS suricata_alerts_avg
                 FROM runs
                 WHERE reliability_loss_percent IS NOT NULL
                 GROUP BY scenario, reliability_loss_percent
@@ -607,9 +697,11 @@ def results_db_summary() -> dict[str, Any]:
                 FROM truth t
                 JOIN runs r ON r.run_id = t.run_id
                 LEFT JOIN sensors s ON s.run_id = t.run_id AND s.attack_type = t.attack_type
+                WHERE t.attack_type IN ({})
                 GROUP BY r.scenario, t.attack_type
                 ORDER BY MAX(r.started_at) DESC, r.scenario, t.attack_type
-                """
+                """.format(",".join("?" for _ in COMPARABLE_ATTACK_TYPES)),
+                tuple(sorted(COMPARABLE_ATTACK_TYPES)),
             ).fetchall()
             recent_rows = db.execute(
                 """
@@ -633,11 +725,12 @@ def results_db_summary() -> dict[str, Any]:
         return empty
 
     def sensor_payload(prefix: str) -> dict[str, Any]:
-        return {
+        payload = {
             "alerts": int(totals[f"{prefix}_alerts"] or 0),
-            "avg_ttd_seconds": totals[f"{prefix}_avg_ttd"],
-            "max_processed_pps": totals[f"{prefix}_max_pps"],
         }
+        if prefix == "detector":
+            payload["max_processed_pps"] = totals["detector_max_pps"]
+        return payload
 
     summary = dict(empty)
     summary.update(
@@ -677,9 +770,6 @@ def results_db_summary() -> dict[str, Any]:
                     "detector_alerts_avg": row["detector_alerts_avg"],
                     "zeek_alerts_avg": row["zeek_alerts_avg"],
                     "suricata_alerts_avg": row["suricata_alerts_avg"],
-                    "detector_ttd_avg": row["detector_ttd_avg"],
-                    "zeek_ttd_avg": row["zeek_ttd_avg"],
-                    "suricata_ttd_avg": row["suricata_ttd_avg"],
                 }
                 for row in loss_rows
             ],
@@ -885,8 +975,30 @@ class JobManager:
 JOB_MANAGER = JobManager()
 
 
+def active_run_summary(job_state: dict[str, Any]) -> dict[str, Any] | None:
+    active = job_state.get("active")
+    if not isinstance(active, dict) or active.get("kind") != "scenario":
+        return None
+    scenario = active.get("scenario")
+    return {
+        "scenario": scenario,
+        "label": pretty_label(str(scenario or active.get("label") or "")),
+        "started_at": active.get("started_at"),
+        "duration": active.get("duration"),
+        "pid": active.get("pid"),
+        "log_path": active.get("log_path"),
+    }
+
+
 def build_status_payload() -> dict[str, Any]:
     JOB_MANAGER.refresh()
+    job_state = JOB_MANAGER.state()
+    active_since = (job_state.get("active") or {}).get("started_at")
+    last_completed_since = (job_state.get("last_completed") or {}).get("started_at")
+    last_completed_until = (job_state.get("last_completed") or {}).get("completed_at")
+    db_since, db_until = latest_run_window_from_db()
+    tool_since = active_since or last_completed_since or db_since or utc_now()
+    tool_until = None if active_since else last_completed_until or db_until
     lab = run_shell_json(REPO_ROOT / "shell/demo/status-json.sh")
     detector_state = load_json_file(DETECTOR_STATE) or {}
     hosts = lab.setdefault("hosts", {})
@@ -897,8 +1009,16 @@ def build_status_payload() -> dict[str, Any]:
             victim["ip"] = detector_state.get("known_victim_ip") or ""
         if isinstance(attacker, dict) and not attacker.get("ip"):
             attacker["ip"] = detector_state.get("known_attacker_ip") or ""
+    active_run = active_run_summary(job_state)
     latest_result = newest_result_dir()
-    latest_result_payload = latest_result_from_db() or latest_result_summary(latest_result)
+    latest_result_payload = None if active_run else latest_result_from_db() or latest_result_summary(latest_result)
+    tools = {
+        "detector": detector_status(tool_since, tool_until),
+        "zeek": zeek_status(tool_since, tool_until),
+        "suricata": suricata_status(tool_since, tool_until),
+    }
+    if not active_run:
+        fill_idle_tool_counters_from_db(tools, latest_result_payload)
     return {
         "generated_at": utc_now(),
         "lab": lab,
@@ -911,26 +1031,12 @@ def build_status_payload() -> dict[str, Any]:
             "attacker_mac": LAB_CONSTANTS.get("ATTACKER_MAC", ""),
             "detector_domains": LAB_CONSTANTS.get("DETECTOR_DOMAINS", ""),
         },
-        "tools": {
-            "detector": detector_status(),
-            "zeek": zeek_status(),
-            "suricata": suricata_status(),
-        },
-        "job": JOB_MANAGER.state(),
+        "tools": tools,
+        "job": job_state,
         "scenarios": scenario_catalog(),
+        "active_run": active_run,
         "latest_result": latest_result_payload,
         "results_db": results_db_summary(),
-        "hints": {
-            "sudo": "Start the dashboard via `make demo-ui` so browser actions inherit the required privileges.",
-            "wireshark": "The Wireshark button tries to open the desktop app on the mirrored switch port.",
-        },
-        "sensor_notes": {
-            "arp_direction_note": bool(
-                latest_result_payload
-                and isinstance(latest_result_payload.get("ground_truth_arp_spoof_direction_counts"), dict)
-                and latest_result_payload.get("ground_truth_arp_spoof_direction_counts")
-            ),
-        },
         "dashboard_root_mode": ROOT_MODE,
     }
 
@@ -1028,11 +1134,11 @@ def run_action(payload: dict[str, Any]) -> dict[str, Any]:
         env_parts = [
             "IPERF_ENABLE=0",
             "POST_ATTACK_SETTLE_SECONDS=0",
-            f"KEEP_DEBUG_ARTIFACTS={1 if debug_artifacts else 0}",
-            f"PCAP_ENABLE={1 if debug_artifacts else 0}",
-            f"PORT_PCAP_ENABLE={1 if debug_artifacts else 0}",
-            f"GUEST_PCAP_ENABLE={1 if debug_artifacts else 0}",
-            f"PCAP_SUMMARIES_ENABLE={1 if debug_artifacts else 0}",
+            f"DEBUG={1 if debug_artifacts else 0}",
+            f"PCAP={1 if debug_artifacts else 0}",
+            f"PORT_PCAP={1 if debug_artifacts else 0}",
+            f"GUEST_PCAP={1 if debug_artifacts else 0}",
+            f"PCAP_SUMMARIES={1 if debug_artifacts else 0}",
             f"RUN_SUMMARY_ENABLE={1 if debug_artifacts else 0}",
             f"PCAP_RETENTION_POLICY={'keep' if debug_artifacts else 'none'}",
             f"RELIABILITY_NETEM_LOSS_PERCENT={loss_percent}",
@@ -1090,6 +1196,12 @@ class DemoRequestHandler(SimpleHTTPRequestHandler):
                 self.wfile.write(data)
             return
         if parsed.path == "/api/download/latest-run.zip":
+            if JOB_MANAGER.state().get("active"):
+                self._send_json(
+                    {"ok": False, "message": "Wait for the running scenario to finish before saving artifacts."},
+                    status=HTTPStatus.CONFLICT,
+                )
+                return
             latest_payload = latest_result_from_db()
             if latest_payload is not None:
                 if not latest_payload.get("can_download"):
@@ -1129,14 +1241,20 @@ class DemoRequestHandler(SimpleHTTPRequestHandler):
             source = parsed.path.rsplit("/", 1)[-1]
             params = parse_qs(parsed.query)
             limit = clamp_duration(params.get("limit", ["25"])[0]) if "limit" in params else 25
+            state = JOB_MANAGER.state()
+            active_since = (state.get("active") or {}).get("started_at")
+            last_completed_since = (state.get("last_completed") or {}).get("started_at")
+            last_completed_until = (state.get("last_completed") or {}).get("completed_at")
+            db_since, db_until = latest_run_window_from_db()
+            tool_since = active_since or last_completed_since or db_since or utc_now()
+            tool_until = None if active_since else last_completed_until or db_until
             if source == "detector":
-                payload = {"entries": interesting_detector_entries(limit=limit), "path": str(DETECTOR_LOG)}
+                payload = {"entries": interesting_detector_entries(limit=limit, since=tool_since, until=tool_until), "path": str(DETECTOR_LOG)}
             elif source == "zeek":
-                payload = {"entries": interesting_zeek_entries(limit=limit), "path": str(ZEEK_LOG)}
+                payload = {"entries": interesting_zeek_entries(limit=limit, since=tool_since, until=tool_until), "path": str(ZEEK_LOG)}
             elif source == "suricata":
-                payload = {"entries": interesting_suricata_entries(limit=limit), "path": str(SURICATA_LOG)}
+                payload = {"entries": interesting_suricata_entries(limit=limit, since=tool_since, until=tool_until), "path": str(SURICATA_LOG)}
             elif source == "runner":
-                state = JOB_MANAGER.state()
                 job = state.get("active") or state.get("last_completed")
                 log_path = Path(job["log_path"]) if job and job.get("log_path") else None
                 payload = {

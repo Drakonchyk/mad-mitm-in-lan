@@ -219,29 +219,50 @@ h1 {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  max-width: 100%;
+  min-width: 0;
   padding: 7px 11px;
   border-radius: 999px;
   background: rgba(31, 38, 35, 0.06);
   font-size: 0.82rem;
+  overflow-wrap: anywhere;
 }
 
 .light {
-  width: 10px;
-  height: 10px;
+  width: 18px;
+  height: 18px;
   border-radius: 999px;
-  display: inline-block;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  background: rgba(187, 67, 50, 0.16);
+}
+
+.light::after {
+  content: "";
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
   background: var(--danger);
-  box-shadow: 0 0 0 5px rgba(187, 67, 50, 0.12);
+  box-shadow: 0 0 0 2px rgba(187, 67, 50, 0.16);
 }
 
 .light.ok {
+  background: rgba(37, 115, 79, 0.16);
+}
+
+.light.ok::after {
   background: var(--ok);
-  box-shadow: 0 0 0 5px rgba(37, 115, 79, 0.12);
+  box-shadow: 0 0 0 2px rgba(37, 115, 79, 0.16);
 }
 
 .light.warn {
+  background: rgba(215, 142, 47, 0.16);
+}
+
+.light.warn::after {
   background: var(--warn);
-  box-shadow: 0 0 0 5px rgba(215, 142, 47, 0.12);
+  box-shadow: 0 0 0 2px rgba(215, 142, 47, 0.16);
 }
 
 .panel-header {
@@ -250,6 +271,7 @@ h1 {
   gap: 10px;
   align-items: baseline;
   margin-bottom: 16px;
+  min-width: 0;
 }
 
 .stack {
@@ -266,6 +288,20 @@ h1 {
   justify-content: space-between;
   gap: 12px;
   align-items: center;
+  min-width: 0;
+}
+
+.row > *,
+.panel-header > *,
+.tool-header > *,
+.stack > * {
+  min-width: 0;
+}
+
+.panel strong,
+.panel .muted,
+.tool-header h2 {
+  overflow-wrap: anywhere;
 }
 
 .muted {
@@ -278,10 +314,17 @@ h1 {
 
 .tool-header {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 12px;
-  align-items: center;
+  align-items: flex-start;
   margin-bottom: 14px;
+  min-width: 0;
+}
+
+.tool-header .badge {
+  flex: 0 1 auto;
+  margin-left: auto;
 }
 
 .tool-counters {
@@ -378,6 +421,16 @@ button.db-tab-button.active {
 .db-table .num {
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.detect-yes {
+  color: var(--ok);
+  font-weight: 800;
+}
+
+.detect-no {
+  color: var(--danger);
+  font-weight: 800;
 }
 
 .scenario-summary-row {

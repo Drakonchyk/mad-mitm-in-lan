@@ -4,19 +4,19 @@ scenario-verify:
 	./shell/scenarios/verify-isolated-lab.sh
 
 scenario-arp-poison-no-forward:
-	./shell/scenarios/record-arp-poison-no-forward.sh "$(or $(DURATION),30)"
+	$(COMMON_RUN_ENV) ./shell/scenarios/record-arp-poison-no-forward.sh "$(or $(DURATION),30)"
 
 scenario-arp-mitm-forward:
-	./shell/scenarios/record-arp-mitm-forward.sh "$(or $(DURATION),30)"
+	$(COMMON_RUN_ENV) ./shell/scenarios/record-arp-mitm-forward.sh "$(or $(DURATION),30)"
 
 scenario-arp-mitm-dns:
-	./shell/scenarios/record-arp-mitm-dns.sh "$(or $(DURATION),45)"
+	$(COMMON_RUN_ENV) ./shell/scenarios/record-arp-mitm-dns.sh "$(or $(DURATION),45)"
 
 scenario-dhcp-spoof:
-	./shell/scenarios/record-dhcp-spoof.sh "$(or $(DURATION),30)"
+	$(COMMON_RUN_ENV) ./shell/scenarios/record-dhcp-spoof.sh "$(or $(DURATION),30)"
 
 scenario-reliability-arp-mitm-dns:
-	./shell/scenarios/record-reliability-arp-mitm-dns.sh "$(or $(DURATION),30)" "$(or $(LOSS),0)"
+	$(COMMON_RUN_ENV) ./shell/scenarios/record-reliability-arp-mitm-dns.sh "$(or $(DURATION),30)" "$(or $(LOSS),0)"
 
 scenario-reliability-dhcp-spoof:
-	./shell/scenarios/record-reliability-dhcp-spoof.sh "$(or $(DURATION),20)" "$(or $(LOSS),0)"
+	$(COMMON_RUN_ENV) ./shell/scenarios/record-reliability-dhcp-spoof.sh "$(or $(DURATION),20)" "$(or $(LOSS),0)"

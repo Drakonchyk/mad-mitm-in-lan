@@ -221,7 +221,6 @@ def render_single(evaluation: RunEvaluation) -> str:
         f"Detector alert types: {json.dumps(evaluation.detector_alert_types, sort_keys=True)}",
         f"Detector canonical attack types: {json.dumps(evaluation.detector_attack_type_counts, sort_keys=True)}",
         f"Detector first alert at: {evaluation.detector_first_alert_at or 'n/a'}",
-        f"Detector raw first signal offset from attack start (s): {evaluation.detector_ttd_seconds if evaluation.detector_ttd_seconds is not None else 'n/a'}",
         f"Detector type recall: {supported_type_recall(evaluation, 'detector_attack_type_counts', evaluation.detector_coverage)}",
         f"Detector event recall: {event_recall(evaluation, 'detector_attack_type_counts', evaluation.detector_coverage)}",
         f"Zeek alert events: {evaluation.zeek_alert_events}",
@@ -229,7 +228,6 @@ def render_single(evaluation: RunEvaluation) -> str:
         f"Zeek alert types: {json.dumps(evaluation.zeek_alert_types, sort_keys=True)}",
         f"Zeek canonical attack types: {json.dumps(evaluation.zeek_attack_type_counts, sort_keys=True)}",
         f"Zeek first alert at: {evaluation.zeek_first_alert_at or 'n/a'}",
-        f"Zeek raw first signal offset from attack start (s): {evaluation.zeek_ttd_seconds if evaluation.zeek_ttd_seconds is not None else 'n/a'}",
         f"Zeek type recall: {supported_type_recall(evaluation, 'zeek_attack_type_counts', evaluation.zeek_coverage)}",
         f"Zeek event recall: {event_recall(evaluation, 'zeek_attack_type_counts', evaluation.zeek_coverage)}",
         f"Suricata alert events: {evaluation.suricata_alert_events}",
@@ -237,7 +235,6 @@ def render_single(evaluation: RunEvaluation) -> str:
         f"Suricata alert signatures: {json.dumps(evaluation.suricata_alert_types, sort_keys=True)}",
         f"Suricata canonical attack types: {json.dumps(evaluation.suricata_attack_type_counts, sort_keys=True)}",
         f"Suricata first alert at: {evaluation.suricata_first_alert_at or 'n/a'}",
-        f"Suricata raw first signal offset from attack start (s): {evaluation.suricata_ttd_seconds if evaluation.suricata_ttd_seconds is not None else 'n/a'}",
         f"Suricata type recall: {supported_type_recall(evaluation, 'suricata_attack_type_counts', evaluation.suricata_coverage)}",
         f"Suricata event recall: {event_recall(evaluation, 'suricata_attack_type_counts', evaluation.suricata_coverage)}",
     ]
@@ -258,8 +255,8 @@ def render_multi(payload: dict[str, Any]) -> str:
         return safe_divide(matched, truth) if truth else 0.0
 
     lines = [
-        "Run | Scenario | Truth | GT Action Events | Detector Alerts | Zeek Alerts | Suricata Alerts | Detector Type Recall | Zeek Type Recall | Suricata Type Recall | Detector TTD(s) | Zeek TTD(s) | Suricata TTD(s)",
-        "--- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---",
+        "Run | Scenario | Truth | GT Action Events | Detector Alerts | Zeek Alerts | Suricata Alerts | Detector Type Recall | Zeek Type Recall | Suricata Type Recall",
+        "--- | --- | --- | --- | --- | --- | --- | --- | --- | ---",
     ]
     for item in payload["runs"]:
         detector_type_recall = item_type_recall(item, "detector") if item["attack_present"] else 0.0
@@ -268,8 +265,7 @@ def render_multi(payload: dict[str, Any]) -> str:
         lines.append(
             f"{item['run_id']} | {item['scenario']} | {item['attack_present']} | "
             f"{item['ground_truth_attacker_action_events']} | {item['detector_alert_events']} | {item['zeek_alert_events']} | "
-            f"{item['suricata_alert_events']} | {detector_type_recall:.3f} | {zeek_type_recall:.3f} | {suricata_type_recall:.3f} | "
-            f"{item['detector_ttd_seconds']} | {item['zeek_ttd_seconds']} | {item['suricata_ttd_seconds']}"
+            f"{item['suricata_alert_events']} | {detector_type_recall:.3f} | {zeek_type_recall:.3f} | {suricata_type_recall:.3f}"
         )
 
     lines.extend(

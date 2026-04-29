@@ -12,8 +12,8 @@ class LabTemplateRenderer:
     repo_root: Path
     config: dict[str, str]
     detector_domains: list[str]
-    attacker_ip: str
-    victim_ip: str
+    attacker_ip: str | None
+    victim_ip: str | None
     lab_subnet: str
 
     @classmethod
@@ -30,8 +30,8 @@ class LabTemplateRenderer:
             repo_root=repo_root,
             config=config,
             detector_domains=list(settings.detector_domains),
-            attacker_ip=attacker_ip or str(settings.attacker_ip),
-            victim_ip=victim_ip or str(settings.victim_ip),
+            attacker_ip=attacker_ip,
+            victim_ip=victim_ip,
             lab_subnet=str(settings.lab_subnet),
         )
 
@@ -49,6 +49,8 @@ class LabTemplateRenderer:
         )
 
     def render_zeek_policy_text(self) -> str:
+        if not self.attacker_ip or not self.victim_ip:
+            raise ValueError("Zeek policy rendering requires runtime --attacker-ip and --victim-ip values")
         domains = ", ".join(f'"{domain.lower()}"' for domain in self.config["DETECTOR_DOMAINS"].split() if domain)
         source = (self.repo_root / "config" / "mitm-lab-live.zeek").read_text(encoding="utf-8")
         return (

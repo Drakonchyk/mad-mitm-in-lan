@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-EVALUATION_CACHE_VERSION = 22
+EVALUATION_CACHE_VERSION = 23
 EVALUATION_DEPENDENCY_PATHS = [
     Path(__file__).resolve(),
     Path(__file__).resolve().with_name("core.py"),
@@ -29,7 +29,7 @@ ATTACK_TYPE_LABELS = {
     "dns_spoof": "DNS spoof",
     "dns_source_violation": "DNS reply from untrusted switch port",
     "dhcp_spoof": "DHCP spoof",
-    "dhcp_rogue_server": "DHCP rogue server identity",
+    "dhcp_rogue_server": "DHCP spoof server identity",
     "dhcp_untrusted_switch_port": "DHCP reply from untrusted switch port",
 }
 

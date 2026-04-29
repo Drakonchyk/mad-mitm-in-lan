@@ -15,16 +15,24 @@ from reporting.plots import TOOL_COLORS, _apply_style, _require_matplotlib
 
 TOOL_ORDER = ["detector", "zeek", "suricata"]
 TOOL_LABELS = {"detector": "Detector", "zeek": "Zeek", "suricata": "Suricata"}
+CSV_PACKET_RECALL = "reliability-packet-recall.csv"
+CSV_DETECTION_SURVIVAL = "reliability-detection-survival.csv"
+CSV_RELIABILITY_SUMMARY = "reliability-summary.csv"
+CSV_BASIC_SCENARIOS = "basic-scenario-summary.csv"
+FIG_DNS_RECALL = "dns-packet-recall.png"
+FIG_DHCP_RECALL = "dhcp-packet-recall.png"
+FIG_DETECTION_SURVIVAL = "detection-survival.png"
+FIG_DETECTOR_PPS = "detector-processed-pps.png"
 SCENARIO_LABELS = {
     "reliability-arp-mitm-dns": "ARP MITM + DNS",
-    "reliability-dhcp-spoof": "Rogue DHCP",
+    "reliability-dhcp-spoof": "DHCP spoof",
 }
 BASIC_SCENARIO_LABELS = {
     "baseline": "Baseline",
     "arp-poison-no-forward": "ARP poison",
     "arp-mitm-forward": "ARP MITM",
     "arp-mitm-dns": "ARP MITM + DNS",
-    "dhcp-spoof": "Rogue DHCP",
+    "dhcp-spoof": "DHCP spoof",
 }
 NORMAL_SCENARIOS = tuple(BASIC_SCENARIO_LABELS)
 COMPARABLE_ATTACK = {
@@ -33,13 +41,13 @@ COMPARABLE_ATTACK = {
 }
 COMPARABLE_ATTACK_LABELS = {
     "dns_spoof": "DNS spoof packets",
-    "dhcp_rogue_server": "Rogue DHCP packets",
+    "dhcp_rogue_server": "DHCP spoof packets",
 }
 ATTACK_TYPE_LABELS = {
     "arp_spoof": "ARP spoof",
     "dns_spoof": "DNS spoof",
     "dns_source_violation": "DNS source violation",
-    "dhcp_rogue_server": "Rogue DHCP",
+    "dhcp_rogue_server": "DHCP spoof",
     "dhcp_untrusted_switch_port": "DHCP untrusted port",
 }
 
@@ -64,9 +72,6 @@ class DbRunMetric:
     detector_alerts: int
     zeek_alerts: int
     suricata_alerts: int
-    detector_ttd: float | None
-    zeek_ttd: float | None
-    suricata_ttd: float | None
     detector_processed_pps: float | None
 
 
@@ -102,7 +107,7 @@ def _metric_rows(db_path: Path) -> list[DbRunMetric]:
         db.row_factory = sqlite3.Row
         run_rows = db.execute(
             """
-            SELECT run_id, scenario, reliability_loss_percent, detector_max_processed_pps
+            SELECT run_id, scenario, reliability_loss_percent, detector_max_processed_pps, ground_truth_source
             FROM runs
             WHERE scenario IN ('reliability-arp-mitm-dns', 'reliability-dhcp-spoof')
               AND reliability_loss_percent IS NOT NULL
@@ -124,7 +129,7 @@ def _metric_rows(db_path: Path) -> list[DbRunMetric]:
             ).fetchone()[0]
             sensor_rows = db.execute(
                 """
-                SELECT sensor, alert_count, supported_ttd_seconds
+                SELECT sensor, alert_count
                 FROM sensor_counts
                 WHERE run_id = ? AND attack_type = ?
                 """,
@@ -136,10 +141,6 @@ def _metric_rows(db_path: Path) -> list[DbRunMetric]:
                 row = sensors.get(tool)
                 return int(row["alert_count"] or 0) if row is not None else 0
 
-            def ttd(tool: str) -> float | None:
-                row = sensors.get(tool)
-                return _float_or_none(row["supported_ttd_seconds"]) if row is not None else None
-
             rows.append(
                 DbRunMetric(
                     run_id=str(run["run_id"]),
@@ -149,9 +150,6 @@ def _metric_rows(db_path: Path) -> list[DbRunMetric]:
                     detector_alerts=alerts("detector"),
                     zeek_alerts=alerts("zeek"),
                     suricata_alerts=alerts("suricata"),
-                    detector_ttd=ttd("detector"),
-                    zeek_ttd=ttd("zeek"),
-                    suricata_ttd=ttd("suricata"),
                     detector_processed_pps=_float_or_none(run["detector_max_processed_pps"]),
                 )
             )
@@ -169,10 +167,6 @@ def _tool_alerts(row: DbRunMetric, tool: str) -> int:
     return int(getattr(row, f"{tool}_alerts"))
 
 
-def _tool_ttd(row: DbRunMetric, tool: str) -> float | None:
-    return getattr(row, f"{tool}_ttd")
-
-
 def _recall(row: DbRunMetric, tool: str) -> float | None:
     if row.truth_count <= 0:
         return None
@@ -183,7 +177,7 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = list(rows[0]) if rows else []
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
     return path
@@ -204,9 +198,6 @@ def _coverage_rows(rows: list[DbRunMetric]) -> list[dict[str, Any]]:
                 "detector_recall_pct": (_mean_or_none([_recall(row, "detector") for row in group]) or 0.0) * 100.0,
                 "zeek_recall_pct": (_mean_or_none([_recall(row, "zeek") for row in group]) or 0.0) * 100.0,
                 "suricata_recall_pct": (_mean_or_none([_recall(row, "suricata") for row in group]) or 0.0) * 100.0,
-                "detector_ttd_s": _mean_or_none([_tool_ttd(row, "detector") for row in group if row.detector_alerts > 0]),
-                "zeek_ttd_s": _mean_or_none([_tool_ttd(row, "zeek") for row in group if row.zeek_alerts > 0]),
-                "suricata_ttd_s": _mean_or_none([_tool_ttd(row, "suricata") for row in group if row.suricata_alerts > 0]),
                 "detector_processed_pps": _mean_or_none([row.detector_processed_pps for row in group]),
             }
         )
@@ -240,24 +231,6 @@ def _wide_reliability_rows(summary_rows: list[dict[str, Any]], metric_suffix: st
     return output
 
 
-def _wide_run_coverage_rows(summary_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    lookup = _summary_lookup(summary_rows)
-    output: list[dict[str, Any]] = []
-    for loss in _loss_levels(summary_rows):
-        dns = lookup.get(("reliability-arp-mitm-dns", loss), {})
-        dhcp = lookup.get(("reliability-dhcp-spoof", loss), {})
-        output.append(
-            {
-                "loss_percent": loss,
-                "dns_runs": dns.get("runs"),
-                "dhcp_runs": dhcp.get("runs"),
-                "dns_mean_truth_packets": dns.get("mean_truth_packets"),
-                "dhcp_mean_truth_packets": dhcp.get("mean_truth_packets"),
-            }
-        )
-    return output
-
-
 def _thesis_reliability_table_rows(summary_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     lookup = _summary_lookup(summary_rows)
     output: list[dict[str, Any]] = []
@@ -284,104 +257,32 @@ def _thesis_reliability_table_rows(summary_rows: list[dict[str, Any]]) -> list[d
     return output
 
 
-def _basic_ttd_rows(db_path: Path) -> list[dict[str, Any]]:
-    with sqlite3.connect(db_path) as db:
-        db.row_factory = sqlite3.Row
-        rows = db.execute(
-            """
-            SELECT scenario,
-                   COUNT(*) AS runs,
-                   AVG(detector_supported_ttd_seconds) AS detector_ttd_s,
-                   AVG(zeek_supported_ttd_seconds) AS zeek_ttd_s,
-                   AVG(suricata_supported_ttd_seconds) AS suricata_ttd_s
-            FROM runs
-            WHERE scenario IN ('arp-poison-no-forward', 'arp-mitm-forward', 'arp-mitm-dns', 'dhcp-spoof')
-            GROUP BY scenario
-            ORDER BY CASE scenario
-                WHEN 'arp-poison-no-forward' THEN 1
-                WHEN 'arp-mitm-forward' THEN 2
-                WHEN 'arp-mitm-dns' THEN 3
-                WHEN 'dhcp-spoof' THEN 4
-                ELSE 99
-            END
-            """
-        ).fetchall()
-    return [
-        {
-            "scenario": str(row["scenario"]),
-            "runs": int(row["runs"] or 0),
-            "detector_ttd_s": row["detector_ttd_s"],
-            "zeek_ttd_s": row["zeek_ttd_s"],
-            "suricata_ttd_s": row["suricata_ttd_s"],
-        }
-        for row in rows
-    ]
-
-
-def _normal_run_rows(db_path: Path) -> list[dict[str, Any]]:
+def _basic_scenario_summary_rows(db_path: Path) -> list[dict[str, Any]]:
     placeholders = ",".join("?" for _ in NORMAL_SCENARIOS)
     with sqlite3.connect(db_path) as db:
         db.row_factory = sqlite3.Row
         rows = db.execute(
             f"""
-            SELECT run_id, scenario, mode, started_at, duration_seconds,
-                   attack_present, detector_alert_events, zeek_alert_events,
-                   suricata_alert_events, detector_supported_ttd_seconds,
-                   zeek_supported_ttd_seconds, suricata_supported_ttd_seconds
-            FROM runs
-            WHERE scenario IN ({placeholders})
-            ORDER BY CASE scenario
-                WHEN 'baseline' THEN 1
-                WHEN 'arp-poison-no-forward' THEN 2
-                WHEN 'arp-mitm-forward' THEN 3
-                WHEN 'arp-mitm-dns' THEN 4
-                WHEN 'dhcp-spoof' THEN 5
-                ELSE 99
-            END, started_at, run_id
-            """,
-            NORMAL_SCENARIOS,
-        ).fetchall()
-    return [dict(row) for row in rows]
-
-
-def _normal_attack_type_rows(db_path: Path) -> list[dict[str, Any]]:
-    placeholders = ",".join("?" for _ in NORMAL_SCENARIOS)
-    with sqlite3.connect(db_path) as db:
-        db.row_factory = sqlite3.Row
-        scenario_runs = {
-            str(row["scenario"]): int(row["runs"] or 0)
-            for row in db.execute(
-                f"""
-                SELECT scenario, COUNT(*) AS runs
-                FROM runs
-                WHERE scenario IN ({placeholders})
-                GROUP BY scenario
-                """,
-                NORMAL_SCENARIOS,
+            WITH truth_per_run AS (
+                SELECT run_id, SUM(truth_count) AS trusted_attack_observations
+                FROM truth_counts
+                GROUP BY run_id
             )
-        }
-        rows = db.execute(
-            f"""
-            SELECT r.scenario, t.attack_type,
-                   COUNT(*) AS truth_runs,
-                   SUM(t.truth_count) AS truth_count_total,
-                   AVG(t.truth_count) AS mean_truth_count,
-                   SUM(COALESCE(d.alert_count, 0)) AS detector_alerts_total,
-                   SUM(COALESCE(z.alert_count, 0)) AS zeek_alerts_total,
-                   SUM(COALESCE(s.alert_count, 0)) AS suricata_alerts_total,
-                   SUM(CASE WHEN COALESCE(d.alert_count, 0) > 0 THEN 1 ELSE 0 END) AS detector_detected_runs,
-                   SUM(CASE WHEN COALESCE(z.alert_count, 0) > 0 THEN 1 ELSE 0 END) AS zeek_detected_runs,
-                   SUM(CASE WHEN COALESCE(s.alert_count, 0) > 0 THEN 1 ELSE 0 END) AS suricata_detected_runs,
-                   AVG(d.supported_ttd_seconds) AS detector_ttd_s,
-                   AVG(z.supported_ttd_seconds) AS zeek_ttd_s,
-                   AVG(s.supported_ttd_seconds) AS suricata_ttd_s
+            SELECT r.scenario,
+                   COUNT(*) AS runs,
+                   AVG(r.duration_seconds) AS duration_s,
+                   SUM(COALESCE(t.trusted_attack_observations, 0)) AS trusted_attack_observations_total,
+                   AVG(COALESCE(t.trusted_attack_observations, 0)) AS trusted_attack_observations_per_run,
+                   SUM(r.detector_alert_events) AS detector_alerts_total,
+                   SUM(r.zeek_alert_events) AS zeek_alerts_total,
+                   SUM(r.suricata_alert_events) AS suricata_alerts_total,
+                   AVG(r.detector_alert_events) AS detector_alerts_per_run,
+                   AVG(r.zeek_alert_events) AS zeek_alerts_per_run,
+                   AVG(r.suricata_alert_events) AS suricata_alerts_per_run
             FROM runs r
-            JOIN truth_counts t ON t.run_id = r.run_id
-            LEFT JOIN sensor_counts d ON d.run_id = r.run_id AND d.attack_type = t.attack_type AND d.sensor = 'detector'
-            LEFT JOIN sensor_counts z ON z.run_id = r.run_id AND z.attack_type = t.attack_type AND z.sensor = 'zeek'
-            LEFT JOIN sensor_counts s ON s.run_id = r.run_id AND s.attack_type = t.attack_type AND s.sensor = 'suricata'
+            LEFT JOIN truth_per_run t ON t.run_id = r.run_id
             WHERE r.scenario IN ({placeholders})
-            GROUP BY r.scenario, t.attack_type
+            GROUP BY r.scenario
             ORDER BY CASE r.scenario
                 WHEN 'baseline' THEN 1
                 WHEN 'arp-poison-no-forward' THEN 2
@@ -389,77 +290,11 @@ def _normal_attack_type_rows(db_path: Path) -> list[dict[str, Any]]:
                 WHEN 'arp-mitm-dns' THEN 4
                 WHEN 'dhcp-spoof' THEN 5
                 ELSE 99
-            END, t.attack_type
+            END
             """,
             NORMAL_SCENARIOS,
         ).fetchall()
-    output: list[dict[str, Any]] = []
-    for row in rows:
-        scenario = str(row["scenario"])
-        truth_runs = int(row["truth_runs"] or 0)
-        item = dict(row)
-        item["scenario_runs"] = scenario_runs.get(scenario, 0)
-        for tool in TOOL_ORDER:
-            detected = int(item.get(f"{tool}_detected_runs") or 0)
-            item[f"{tool}_detection_pct"] = (detected / truth_runs * 100.0) if truth_runs else None
-        output.append(item)
-    return output
-
-
-def _normal_ttd_wide_rows(attack_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "scenario": row["scenario"],
-            "attack_type": row["attack_type"],
-            "scenario_runs": row["scenario_runs"],
-            "truth_runs": row["truth_runs"],
-            "detector_ttd_s": row["detector_ttd_s"],
-            "zeek_ttd_s": row["zeek_ttd_s"],
-            "suricata_ttd_s": row["suricata_ttd_s"],
-        }
-        for row in attack_rows
-    ]
-
-
-def _baseline_clean_alert_rows(normal_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    baseline = [row for row in normal_rows if row["scenario"] == "baseline"]
-    if not baseline:
-        return []
-    return [
-        {
-            "scenario": "baseline",
-            "runs": len(baseline),
-            "detector_runs_with_alerts": sum(1 for row in baseline if int(row["detector_alert_events"] or 0) > 0),
-            "zeek_runs_with_alerts": sum(1 for row in baseline if int(row["zeek_alert_events"] or 0) > 0),
-            "suricata_runs_with_alerts": sum(1 for row in baseline if int(row["suricata_alert_events"] or 0) > 0),
-            "detector_alerts_total": sum(int(row["detector_alert_events"] or 0) for row in baseline),
-            "zeek_alerts_total": sum(int(row["zeek_alert_events"] or 0) for row in baseline),
-            "suricata_alerts_total": sum(int(row["suricata_alert_events"] or 0) for row in baseline),
-        }
-    ]
-
-
-def _plot_run_coverage(summary_rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
-    scenarios = [scenario for scenario in SCENARIO_LABELS if any(row["scenario"] == scenario for row in summary_rows)]
-    if not scenarios:
-        return None
-    losses = sorted({int(row["loss_percent"]) for row in summary_rows})
-    fig, axes = plt.subplots(len(scenarios), 1, figsize=(10.6, max(3.6, 2.8 * len(scenarios))), sharex=True)
-    if len(scenarios) == 1:
-        axes = [axes]
-    for ax, scenario in zip(axes, scenarios):
-        values = [
-            next((int(row["runs"]) for row in summary_rows if row["scenario"] == scenario and int(row["loss_percent"]) == loss), 0)
-            for loss in losses
-        ]
-        bars = ax.bar(losses, values, width=6.5, color="#2f7a78")
-        for bar, value in zip(bars, values):
-            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.25, str(value), ha="center", fontsize=9)
-        ax.set_ylabel("Runs")
-        ax.set_title(f"{SCENARIO_LABELS[scenario]} sample coverage")
-        ax.set_ylim(0, max(values or [1]) + 3)
-    axes[-1].set_xlabel("NetEm packet loss (%)")
-    return _save_db(fig, output_dir / "figure-db-01-reliability-run-coverage.png", plt)
+    return [dict(row) for row in rows]
 
 
 def _plot_packet_recall_for_scenario(
@@ -483,7 +318,7 @@ def _plot_packet_recall_for_scenario(
         ax.fill_between(losses, values, 0, color=TOOL_COLORS[tool], alpha=0.10)
         for threshold in range(10, 100, 10):
             ax.axhline(threshold, color="#a8a29e", linewidth=0.75, linestyle="--", alpha=0.35)
-        ax.set_title(TOOL_LABELS[tool])
+        ax.set_title(TOOL_LABELS[tool], fontsize=16, fontweight="bold")
         ax.set_xlabel("NetEm packet loss (%)")
         ax.set_ylim(-4, 104)
         ax.axhline(100, color="#78716c", linewidth=1.0, linestyle="--", alpha=0.55)
@@ -491,7 +326,12 @@ def _plot_packet_recall_for_scenario(
         ax.tick_params(axis="x", rotation=45)
     axes[0].set_ylabel("Packet recall (%)")
     attack_label = COMPARABLE_ATTACK_LABELS[COMPARABLE_ATTACK[scenario]]
-    fig.suptitle(f"{SCENARIO_LABELS[scenario]} packet-loss recall: {attack_label}", y=0.98, fontweight="bold")
+    fig.suptitle(
+        f"{SCENARIO_LABELS[scenario]} packet-loss recall: {attack_label}",
+        y=0.985,
+        fontsize=20,
+        fontweight="bold",
+    )
     return _save_db(fig, output_dir / filename, plt, reserve_title=True)
 
 
@@ -501,7 +341,7 @@ def _plot_packet_recall_dns(summary_rows: list[dict[str, Any]], output_dir: Path
         output_dir,
         plt,
         "reliability-arp-mitm-dns",
-        "figure-db-02a-dns-packet-recall-by-detector.png",
+        FIG_DNS_RECALL,
     )
 
 
@@ -511,43 +351,8 @@ def _plot_packet_recall_dhcp(summary_rows: list[dict[str, Any]], output_dir: Pat
         output_dir,
         plt,
         "reliability-dhcp-spoof",
-        "figure-db-02b-dhcp-packet-recall-by-detector.png",
+        FIG_DHCP_RECALL,
     )
-
-
-def _plot_packet_recall(summary_rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
-    scenarios = [scenario for scenario in SCENARIO_LABELS if any(row["scenario"] == scenario for row in summary_rows)]
-    if not scenarios:
-        return None
-    fig, axes = plt.subplots(len(scenarios), 3, figsize=(15.2, max(4.8, 3.8 * len(scenarios))), sharex=True, sharey=True)
-    if len(scenarios) == 1:
-        axes = np.array([axes])
-    for row_index, scenario in enumerate(scenarios):
-        scenario_rows = [row for row in summary_rows if row["scenario"] == scenario]
-        losses = sorted(int(row["loss_percent"]) for row in scenario_rows)
-        attack_label = COMPARABLE_ATTACK_LABELS[COMPARABLE_ATTACK[scenario]]
-        for col_index, tool in enumerate(TOOL_ORDER):
-            ax = axes[row_index][col_index]
-            values = [
-                next(float(row[f"{tool}_recall_pct"]) for row in scenario_rows if int(row["loss_percent"]) == loss)
-                for loss in losses
-            ]
-            ax.plot(losses, values, marker="o", linewidth=2.2, color=TOOL_COLORS[tool])
-            ax.fill_between(losses, values, 0, color=TOOL_COLORS[tool], alpha=0.10)
-            ax.set_ylim(-4, 104)
-            for threshold in range(10, 100, 10):
-                ax.axhline(threshold, color="#a8a29e", linewidth=0.75, linestyle="--", alpha=0.35)
-            ax.axhline(100, color="#78716c", linewidth=1.0, linestyle="--", alpha=0.55)
-            if row_index == 0:
-                ax.set_title(TOOL_LABELS[tool])
-            if col_index == 0:
-                ax.set_ylabel(f"{SCENARIO_LABELS[scenario]}\n{attack_label}\nRecall (%)")
-            if row_index == len(scenarios) - 1:
-                ax.set_xlabel("NetEm packet loss (%)")
-            ax.set_xticks(losses)
-            ax.tick_params(axis="x", rotation=45)
-    fig.suptitle("Comparable Packet Recall By Tool", y=1.01, fontweight="bold")
-    return _save_db(fig, output_dir / "figure-db-02-comparable-packet-recall.png", plt, reserve_title=True)
 
 
 def _plot_detection_survival(summary_rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
@@ -573,156 +378,15 @@ def _plot_detection_survival(summary_rows: list[dict[str, Any]], output_dir: Pat
                 ax.axhline(threshold, color="#a8a29e", linewidth=0.75, linestyle="--", alpha=0.35)
             ax.axhline(100, color="#78716c", linewidth=1.0, linestyle="--", alpha=0.55)
             if row_index == 0:
-                ax.set_title(TOOL_LABELS[tool])
+                ax.set_title(TOOL_LABELS[tool], fontsize=16, fontweight="bold")
             if col_index == 0:
                 ax.set_ylabel(f"{SCENARIO_LABELS[scenario]}\nDetected runs (%)")
             if row_index == len(scenarios) - 1:
                 ax.set_xlabel("NetEm packet loss (%)")
             ax.set_xticks(losses)
             ax.tick_params(axis="x", rotation=45)
-    fig.suptitle("Detection Survival By Tool", y=0.98, fontweight="bold")
-    return _save_db(fig, output_dir / "figure-db-03-detection-survival.png", plt, reserve_title=True)
-
-
-def _plot_ttd_heatmap(summary_rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
-    row_labels: list[str] = []
-    matrix: list[list[float]] = []
-    losses = sorted({int(row["loss_percent"]) for row in summary_rows})
-    for scenario in SCENARIO_LABELS:
-        scenario_rows = [row for row in summary_rows if row["scenario"] == scenario]
-        if not scenario_rows:
-            continue
-        for tool in TOOL_ORDER:
-            row_labels.append(f"{SCENARIO_LABELS[scenario]} / {TOOL_LABELS[tool]}")
-            matrix.append(
-                [
-                    math.nan
-                    if (value := next((row[f"{tool}_ttd_s"] for row in scenario_rows if int(row["loss_percent"]) == loss), None)) is None
-                    else float(value)
-                    for loss in losses
-                ]
-            )
-    if not matrix:
-        return None
-    data = np.array(matrix, dtype=float)
-    if np.isnan(data).all():
-        return None
-    finite = data[np.isfinite(data)]
-    vmax = max(1.0, float(np.nanpercentile(finite, 95))) if finite.size else 1.0
-    fig, ax = plt.subplots(figsize=(13.2, max(4.8, len(row_labels) * 0.48)))
-    cmap = plt.cm.YlOrRd.copy()
-    cmap.set_bad("#e7e5e4")
-    image = ax.imshow(np.ma.masked_invalid(data), aspect="auto", cmap=cmap, vmin=0.0, vmax=vmax)
-    ax.set_xticks(range(len(losses)))
-    ax.set_xticklabels([str(loss) for loss in losses], rotation=45, ha="right")
-    ax.set_yticks(range(len(row_labels)))
-    ax.set_yticklabels(row_labels)
-    ax.set_xlabel("NetEm packet loss (%)")
-    ax.set_title("Mean Time To First Comparable Alert")
-    ax.grid(False)
-    for row_index in range(data.shape[0]):
-        for col_index in range(data.shape[1]):
-            value = data[row_index, col_index]
-            if np.isnan(value):
-                label = "miss"
-                color = "#7f1d1d"
-            else:
-                label = f"{value:.1f}"
-                color = "#1c1917"
-            ax.text(col_index, row_index, label, ha="center", va="center", fontsize=8, color=color)
-    cbar = fig.colorbar(image, ax=ax, fraction=0.026, pad=0.02)
-    cbar.set_label("Seconds")
-    return _save_db(fig, output_dir / "figure-db-04-time-to-detection.png", plt)
-
-
-def _plot_basic_ttd_heatmap(basic_rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
-    if not basic_rows:
-        return None
-    scenarios = [row["scenario"] for row in basic_rows]
-    matrix = np.array(
-        [
-            [
-                math.nan if row.get(f"{tool}_ttd_s") is None else float(row[f"{tool}_ttd_s"])
-                for tool in TOOL_ORDER
-            ]
-            for row in basic_rows
-        ],
-        dtype=float,
-    )
-    if np.isnan(matrix).all():
-        return None
-    finite = matrix[np.isfinite(matrix)]
-    vmax = max(1.0, float(np.nanpercentile(finite, 95))) if finite.size else 1.0
-    fig, ax = plt.subplots(figsize=(8.8, max(4.6, len(scenarios) * 0.72)))
-    cmap = plt.cm.YlOrRd.copy()
-    cmap.set_bad("#e7e5e4")
-    image = ax.imshow(np.ma.masked_invalid(matrix), aspect="auto", cmap=cmap, vmin=0.0, vmax=vmax)
-    ax.set_xticks(range(len(TOOL_ORDER)))
-    ax.set_xticklabels([TOOL_LABELS[tool] for tool in TOOL_ORDER])
-    ax.set_yticks(range(len(scenarios)))
-    ax.set_yticklabels([BASIC_SCENARIO_LABELS.get(scenario, scenario) for scenario in scenarios])
-    ax.set_title("Basic Scenario Mean Time To First Detection")
-    ax.grid(False)
-    for row_index in range(matrix.shape[0]):
-        for col_index in range(matrix.shape[1]):
-            value = matrix[row_index, col_index]
-            label = "miss" if np.isnan(value) else f"{value:.2f}"
-            color = "#7f1d1d" if np.isnan(value) else "#1c1917"
-            ax.text(col_index, row_index, label, ha="center", va="center", fontsize=9, color=color)
-    cbar = fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label("Seconds")
-    ax.text(
-        0.0,
-        -0.18,
-        "This figure appears after basic attack runs are present in the SQLite database.",
-        transform=ax.transAxes,
-        fontsize=9,
-        color="#57534e",
-    )
-    return _save_db(fig, output_dir / "figure-db-07-basic-scenario-ttd-heatmap.png", plt)
-
-
-def _plot_normal_attack_ttd_heatmap(attack_rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
-    rows = [row for row in attack_rows if any(row.get(f"{tool}_ttd_s") is not None for tool in TOOL_ORDER)]
-    if not rows:
-        return None
-    matrix = np.array(
-        [
-            [
-                math.nan if row.get(f"{tool}_ttd_s") is None else float(row[f"{tool}_ttd_s"])
-                for tool in TOOL_ORDER
-            ]
-            for row in rows
-        ],
-        dtype=float,
-    )
-    finite = matrix[np.isfinite(matrix)]
-    if not finite.size:
-        return None
-    row_labels = [
-        f"{BASIC_SCENARIO_LABELS.get(str(row['scenario']), row['scenario'])} / {ATTACK_TYPE_LABELS.get(str(row['attack_type']), row['attack_type'])}"
-        for row in rows
-    ]
-    vmax = max(1.0, float(np.nanpercentile(finite, 95)))
-    fig, ax = plt.subplots(figsize=(9.8, max(4.8, len(row_labels) * 0.62)))
-    cmap = plt.cm.YlOrRd.copy()
-    cmap.set_bad("#e7e5e4")
-    image = ax.imshow(np.ma.masked_invalid(matrix), aspect="auto", cmap=cmap, vmin=0.0, vmax=vmax)
-    ax.set_xticks(range(len(TOOL_ORDER)))
-    ax.set_xticklabels([TOOL_LABELS[tool] for tool in TOOL_ORDER])
-    ax.set_yticks(range(len(row_labels)))
-    ax.set_yticklabels(row_labels)
-    ax.set_title("Normal Scenario Mean Time To First Alert By Evidence Type")
-    ax.grid(False)
-    for row_index in range(matrix.shape[0]):
-        for col_index in range(matrix.shape[1]):
-            value = matrix[row_index, col_index]
-            label = "miss" if np.isnan(value) else f"{value:.2f}"
-            color = "#7f1d1d" if np.isnan(value) else "#1c1917"
-            ax.text(col_index, row_index, label, ha="center", va="center", fontsize=9, color=color)
-    cbar = fig.colorbar(image, ax=ax, fraction=0.042, pad=0.04)
-    cbar.set_label("Seconds")
-    return _save_db(fig, output_dir / "figure-db-09-normal-scenario-attack-ttd-heatmap.png", plt, reserve_title=True)
+    fig.suptitle("Detection Survival By Tool", y=0.985, fontsize=20, fontweight="bold")
+    return _save_db(fig, output_dir / FIG_DETECTION_SURVIVAL, plt, reserve_title=True)
 
 
 def _plot_detector_pps(summary_rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
@@ -742,27 +406,7 @@ def _plot_detector_pps(summary_rows: list[dict[str, Any]], output_dir: Path, plt
     ax.set_ylabel("Detector max processed pps")
     ax.set_title("Detector Throughput Telemetry Only")
     ax.legend()
-    return _save_db(fig, output_dir / "figure-db-05-detector-processed-pps.png", plt)
-
-
-def _plot_truth_volume(summary_rows: list[dict[str, Any]], output_dir: Path, plt: Any) -> Path | None:
-    scenarios = [scenario for scenario in SCENARIO_LABELS if any(row["scenario"] == scenario for row in summary_rows)]
-    if not scenarios:
-        return None
-    fig, ax = plt.subplots(figsize=(10.6, 4.8))
-    for scenario in scenarios:
-        scenario_rows = [row for row in summary_rows if row["scenario"] == scenario]
-        losses = sorted(int(row["loss_percent"]) for row in scenario_rows)
-        values = [
-            next(float(row["mean_truth_packets"]) for row in scenario_rows if int(row["loss_percent"]) == loss)
-            for loss in losses
-        ]
-        ax.plot(losses, values, marker="o", linewidth=2.2, label=SCENARIO_LABELS[scenario])
-    ax.set_xlabel("NetEm packet loss (%)")
-    ax.set_ylabel("Mean comparable truth packets per run")
-    ax.set_title("Unimpaired Ground-Truth Packet Opportunities")
-    ax.legend()
-    return _save_db(fig, output_dir / "figure-db-06-ground-truth-volume.png", plt)
+    return _save_db(fig, output_dir / FIG_DETECTOR_PPS, plt)
 
 
 def _write_markdown(
@@ -774,9 +418,16 @@ def _write_markdown(
     basic_rows: list[dict[str, Any]],
 ) -> Path:
     lines = [
-        "# SQLite Experiment Report",
+        "# Experiment Report",
         "",
-        f"Source database: `{db_path}`",
+        f"Result source: `{db_path}`",
+        "",
+        "## Tables",
+        "",
+        f"- Reliability packet recall: `{CSV_PACKET_RECALL}`",
+        f"- Reliability detection survival: `{CSV_DETECTION_SURVIVAL}`",
+        f"- Reliability summary: `{CSV_RELIABILITY_SUMMARY}`",
+        f"- Basic scenario summary: `{CSV_BASIC_SCENARIOS}`",
         "",
         "## Figures",
         "",
@@ -794,7 +445,7 @@ def _write_markdown(
         counts = ", ".join(f"{int(row['loss_percent'])}%={int(row['runs'])}" for row in scenario_rows)
         lines.append(f"- {SCENARIO_LABELS[scenario]}: {counts}")
     if basic_rows:
-        lines.extend(["", "## Basic Scenario TTD Coverage", ""])
+        lines.extend(["", "## Basic Scenario Coverage", ""])
         for row in basic_rows:
             lines.append(f"- {BASIC_SCENARIO_LABELS.get(row['scenario'], row['scenario'])}: {int(row['runs'])} runs")
     path = output_dir / "experiment-report.md"
@@ -815,38 +466,13 @@ def build_db_report(db_path: Path, output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     clear_report_outputs(output_dir)
     summary_rows = _coverage_rows(rows)
-    basic_rows = _basic_ttd_rows(db_path)
-    normal_run_rows = _normal_run_rows(db_path)
-    normal_attack_rows = _normal_attack_type_rows(db_path)
-    _write_csv(output_dir / "table-db-01-reliability-summary.csv", summary_rows)
-    _write_csv(
-        output_dir / "table-db-02-run-level-comparable-events.csv",
-        [
-            {
-                "run_id": row.run_id,
-                "scenario": row.scenario,
-                "loss_percent": row.loss_percent,
-                "truth_count": row.truth_count,
-                "detector_alerts": row.detector_alerts,
-                "zeek_alerts": row.zeek_alerts,
-                "suricata_alerts": row.suricata_alerts,
-                "detector_recall_pct": _fmt((_recall(row, "detector") or 0.0) * 100.0),
-                "zeek_recall_pct": _fmt((_recall(row, "zeek") or 0.0) * 100.0),
-                "suricata_recall_pct": _fmt((_recall(row, "suricata") or 0.0) * 100.0),
-            }
-            for row in rows
-        ],
-    )
-    _write_csv(output_dir / "table-db-03-basic-scenario-ttd.csv", basic_rows)
-    _write_csv(output_dir / "table-db-04-thesis-packet-recall-wide.csv", _wide_reliability_rows(summary_rows, "recall_pct"))
-    _write_csv(output_dir / "table-db-05-thesis-detection-survival-wide.csv", _wide_reliability_rows(summary_rows, "detection_pct"))
-    _write_csv(output_dir / "table-db-06-thesis-time-to-detection-wide.csv", _wide_reliability_rows(summary_rows, "ttd_s"))
-    _write_csv(output_dir / "table-db-07-thesis-run-coverage-wide.csv", _wide_run_coverage_rows(summary_rows))
-    _write_csv(output_dir / "table-db-08-thesis-reliability-paste-table.csv", _thesis_reliability_table_rows(summary_rows))
-    _write_csv(output_dir / "table-db-09-normal-run-summary.csv", normal_run_rows)
-    _write_csv(output_dir / "table-db-10-normal-attack-type-summary.csv", normal_attack_rows)
-    _write_csv(output_dir / "table-db-11-normal-attack-ttd-wide.csv", _normal_ttd_wide_rows(normal_attack_rows))
-    _write_csv(output_dir / "table-db-12-baseline-clean-alert-summary.csv", _baseline_clean_alert_rows(normal_run_rows))
+    basic_summary_rows = _basic_scenario_summary_rows(db_path)
+    # Keep only thesis-facing CSVs in the report directory. Raw run-level and
+    # internal coverage tables stay in SQLite, where they are easier to query.
+    _write_csv(output_dir / CSV_PACKET_RECALL, _wide_reliability_rows(summary_rows, "recall_pct"))
+    _write_csv(output_dir / CSV_DETECTION_SURVIVAL, _wide_reliability_rows(summary_rows, "detection_pct"))
+    _write_csv(output_dir / CSV_RELIABILITY_SUMMARY, _thesis_reliability_table_rows(summary_rows))
+    _write_csv(output_dir / CSV_BASIC_SCENARIOS, basic_summary_rows)
 
     plt = _require_matplotlib()
     _apply_style(plt)
@@ -855,19 +481,11 @@ def build_db_report(db_path: Path, output_dir: Path) -> Path:
         ("DNS packet recall by detector", _plot_packet_recall_dns),
         ("DHCP packet recall by detector", _plot_packet_recall_dhcp),
         ("Detection survival", _plot_detection_survival),
-        ("Time to detection", _plot_ttd_heatmap),
         ("Detector processed pps", _plot_detector_pps),
     ]:
         path = builder(summary_rows, output_dir, plt)
         if path is not None:
             plots[title] = path
-    basic_ttd_path = _plot_basic_ttd_heatmap(basic_rows, output_dir, plt)
-    if basic_ttd_path is not None:
-        plots["Basic scenario mean time to first detection"] = basic_ttd_path
-    normal_attack_ttd_path = _plot_normal_attack_ttd_heatmap(normal_attack_rows, output_dir, plt)
-    if normal_attack_ttd_path is not None:
-        plots["Normal scenario attack-type time to first alert"] = normal_attack_ttd_path
-
     run_counts = {(row["scenario"], int(row["loss_percent"])): int(row["runs"]) for row in summary_rows}
     dhcp_low = [run_counts.get(("reliability-dhcp-spoof", loss), 0) for loss in range(0, 70, 10)]
     dhcp_high = [run_counts.get(("reliability-dhcp-spoof", loss), 0) for loss in range(70, 101, 10)]
@@ -881,8 +499,6 @@ def build_db_report(db_path: Path, output_dir: Path) -> Path:
         notes.append(
             "DHCP has extra repetitions at lower packet-loss levels after an earlier command used the default loss sweep; the run-coverage counts below show the resulting sample size imbalance."
         )
-    if not basic_rows:
-        notes.append("Basic-scenario TTD heatmap support is implemented, but no basic attack rows are present in the current SQLite database yet.")
-    report_path = _write_markdown(output_dir, db_path, plots, notes, summary_rows, basic_rows)
+    report_path = _write_markdown(output_dir, db_path, plots, notes, summary_rows, basic_summary_rows)
     print(f"Wrote SQLite report figures, tables, and markdown to {output_dir}")
     return report_path

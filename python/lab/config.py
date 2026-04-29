@@ -18,8 +18,6 @@ class LabSettings:
     lab_name: str
     lab_subnet: IPv4Network
     gateway_ip: IPv4Address
-    victim_ip: IPv4Address
-    attacker_ip: IPv4Address
     dns_server: IPv4Address
     detector_domains: tuple[str, ...]
 
@@ -52,10 +50,6 @@ def load_lab_config(path: Path = LAB_CONF_PATH) -> dict[str, str]:
     return values
 
 
-def _ip_from_cidr(value: str) -> IPv4Address:
-    return ip_address(value.split("/", 1)[0])
-
-
 def load_lab_settings(path: Path = LAB_CONF_PATH) -> LabSettings:
     values = load_lab_config(path)
     return LabSettings(
@@ -63,8 +57,6 @@ def load_lab_settings(path: Path = LAB_CONF_PATH) -> LabSettings:
         lab_name=values["LAB_NAME"],
         lab_subnet=ip_network(values["LAB_SUBNET"], strict=False),
         gateway_ip=ip_address(values["GATEWAY_IP"]),
-        victim_ip=_ip_from_cidr(values["VICTIM_CIDR"]),
-        attacker_ip=_ip_from_cidr(values["ATTACKER_CIDR"]),
         dns_server=ip_address(values["DNS_SERVER"]),
         detector_domains=tuple(domain for domain in values["DETECTOR_DOMAINS"].split() if domain),
     )

@@ -1,82 +1,32 @@
 # MITM Diploma Lab
 
-## What This Project Is
+This repository builds an isolated libvirt/Open vSwitch lab for studying local-LAN
+man-in-the-middle behavior. It runs repeatable ARP, DNS, and DHCP spoofing
+scenarios, compares a custom packet detector with Zeek and Suricata, and stores the
+results in a compact SQLite database for plots and thesis tables.
 
-This repository builds a small, isolated libvirt lab for studying LAN man-in-the-middle behavior and evaluating a switch-observer detector against optional Zeek and Suricata comparators.
+The lab is intentionally local and isolated. Do not point these scripts at a real
+network.
 
-The lab contains three virtual machines:
+## What Is In The Lab
 
-- `mitm-gateway`
-- `mitm-victim`
-- `mitm-attacker`
+- `mitm-gateway`: trusted gateway, DNS server, DHCP server, and NAT point
+- `mitm-victim`: ordinary client, addressed by DHCP
+- `mitm-attacker`: attack VM, addressed by DHCP
+- `br-mitm-lab`: isolated Open vSwitch bridge
+- `mitm-sensor0`: mirrored host sensor port used by Detector, Zeek, and Suricata
 
-The project automates:
+The gateway has a fixed lab identity:
 
-- lab provisioning and teardown;
-- repeatable scenario execution for the main experiment set;
-- reliability campaigns for monitored-feed packet loss analysis;
-- compact result collection for plots and interpretation;
-- dataset export, tables, and figures for the combined experiment report.
+- IP: `10.20.20.1`
+- MAC: `52:54:00:aa:20:01`
 
-Useful companion docs:
+Victim and attacker IPs are not fixed. The scripts learn them from DHCP leases,
+traffic, and attacker-side discovery.
 
-- [Topology](docs/topology.md)
-- [Repo Architecture](docs/repo-architecture.md)
-- [Experiments](docs/experiments.md)
-- [Scenario Definitions](docs/scenario-definitions.md)
-- [Evaluation Metrics](docs/evaluation-metrics.md)
-- [Artifact Map](docs/artifact-map.md)
-- [Command Reference](docs/command-reference.md)
+## Current Experiment Set
 
-## Threat Model
-
-The detector is meant to observe signs of local-LAN MITM behavior from a mirrored software-switch sensor port inside a controlled research environment.
-
-Ground truth for ordinary evaluation comes from trusted Open vSwitch observations and scenario metadata, not from the detector's own JSON events. Full packet captures can still be enabled for manual validation.
-
-The main attack families modeled here are:
-
-- ARP poisoning without forwarding;
-- transparent ARP MITM with forwarding enabled;
-- ARP MITM plus focused DNS spoofing;
-- focused rogue DHCP server advertisement on the LAN.
-
-This is a research testbed, not a production hardening framework.
-
-The attacker automation is no longer handed the victim IP by the host plan by default. In the normal attack paths it discovers the victim on the lab LAN from the attacker side before launching the spoofing logic.
-
-## Topology
-
-The lab uses two network layers:
-
-- `default`: upstream NAT network for host-provided connectivity;
-- `br-mitm-lab`: isolated Open vSwitch LAN for the gateway, victim, and attacker, mirrored to the host sensor port `mitm-sensor0`.
-
-Address plan:
-
-- gateway: `10.20.20.1/24`
-- victim: DHCP lease from the lab gateway
-- attacker: DHCP lease from the lab gateway
-
-Where components live:
-
-- detector: host-side process attached to the mirrored switch sensor port;
-- Zeek comparator: host-side process attached to the mirrored switch sensor port, enabled by default for experiment runs;
-- Suricata comparator: host-side process attached to the mirrored switch sensor port, enabled by default for experiment runs;
-- packet captures: optional per run;
-- orchestration and report generation: host machine.
-
-The switch setup treats the gateway-facing port as DHCP-trusted and the victim/attacker-facing ports as untrusted for switch-side DHCP truth. By default `LAB_DHCP_SNOOPING_MODE=monitor` installs OVS counter flows that detect DHCP server replies from non-gateway ports while still forwarding them; set `LAB_DHCP_SNOOPING_MODE=enforce` or legacy `LAB_DHCP_SNOOPING_ENFORCE=1` only when you want OVS to drop those replies.
-OVS ingress-port verdicts are stored as trusted switch observations; the detector, Zeek, and Suricata comparison uses the mirrored packet feed.
-The detector is seeded with expected MAC identities and the trusted DHCP server, but it learns victim and attacker IP bindings from observed DHCP and traffic rather than from host-provided IP arguments.
-Forwarding attacks deliberately suppress Linux ICMP redirects on the attacker so the ARP and DNS MITM behavior is measured cleanly without router-side redirect noise.
-On the current host Suricata build/config, ARP comparison rules may still be unavailable; in that case Suricata runs as a DHCP+DNS+ICMP comparator and the run summary states that explicitly.
-
-The architecture diagram is in [docs/topology.md](docs/topology.md).
-
-## Scenario Set
-
-Main evaluation scenarios:
+Main runs:
 
 - `baseline`
 - `arp-poison-no-forward`
@@ -84,32 +34,38 @@ Main evaluation scenarios:
 - `arp-mitm-dns`
 - `dhcp-spoof`
 
-Supplementary scenarios:
+Reliability runs:
 
 - `reliability-arp-mitm-dns`
 - `reliability-dhcp-spoof`
 
-The explanatory experiment overview is in [docs/experiments.md](docs/experiments.md), and the exact timing windows are in [docs/scenario-definitions.md](docs/scenario-definitions.md).
+Reliability campaigns send the mirrored sensor feed through a NetEm path and sweep
+packet loss from 0% to 100% in 10% steps by default.
+
+## Ground Truth
+
+Ground truth is based on switch-side trusted observations, not on the detector's own
+alerts. OVS knows which ingress port belongs to the trusted gateway and records
+ARP/DNS/DHCP trust violations as compact observations. Packet captures are optional
+debug evidence.
+
+The detector, Zeek, and Suricata are compared on the same mirrored packet feed.
+OVS port-aware truth is kept separate because Zeek and Suricata do not receive OVS
+ingress-port metadata in this setup.
 
 ## Quick Start
 
-Install the host prerequisites first:
+Install host dependencies:
 
 ```bash
 sudo apt update
 sudo apt install qemu-kvm libvirt-daemon-system virt-manager cpu-checker \
   wireshark tshark tcpdump python3-pip python3-scapy git jq curl iperf3 dnsutils \
-  openvswitch-switch
-sudo apt install cloud-image-utils
-```
-
-If needed, add your user to the `libvirt` group and log back in:
-
-```bash
+  openvswitch-switch cloud-image-utils
 sudo adduser "$USER" libvirt
 ```
 
-Then from the repository root:
+Log out and back in if you changed group membership, then run:
 
 ```bash
 make prereqs
@@ -117,185 +73,87 @@ make setup
 make status
 ```
 
-Common run toggles:
+## Common Commands
 
-- detector: always on for experiment runs;
-- Zeek: enabled by default, disable with `ZEEK_ENABLE=0`;
-- Suricata: enabled by default, disable with `SURICATA_ENABLE=0`;
-- pcap capture: off by default for experiment and scenario runs; enable with `PCAP_ENABLE=1` and optionally `PORT_PCAP_ENABLE=1`. Reliability plans use compact OVS snooping truth without pcaps unless you opt in.
-- raw per-run files: pruned by default after their contents are evaluated and inserted into `results/experiment-results.sqlite`; retain them with `KEEP_DEBUG_ARTIFACTS=1`.
-
-Example:
+Run the clean baseline:
 
 ```bash
 make baseline
-ZEEK_ENABLE=0 SURICATA_ENABLE=0 make baseline
-PCAP_ENABLE=1 PORT_PCAP_ENABLE=1 make baseline
 ```
 
-## Demo Path
-
-The repo has one compact browser dashboard for live runs:
+Run the main scenario plan:
 
 ```bash
-make demo-ui
+RUNS=5 make experiment-plan
 ```
 
-`make demo-ui` starts a localhost control-room style dashboard on `http://127.0.0.1:8765/` with live lab health, DHCP pool status, detector/Zeek/Suricata status, recent events, scenario buttons, and a Wireshark launcher.
-
-The dashboard itself now starts under sudo so the browser controls can launch lab actions reliably:
+Run one scenario:
 
 ```bash
-make demo-ui
-```
-
-## Dangerous Operations Warning
-
-This repository is for an isolated local lab only.
-
-- Do not point these scripts at a real network.
-- Do not run the direct scenario commands outside the dedicated lab.
-- The attacker-side automation is intentionally limited to the isolated VMs created by this repo.
-- The high-risk scenario entry points now live under `shell/scenarios/` and are exposed through a small set of top-level `make scenario-*` targets.
-
-## Artifact Layout
-
-Top-level layout:
-
-- `Makefile`: common entry points;
-- `mk/`: grouped make target definitions;
-- `shell/lab/`: lab lifecycle and provisioning scripts;
-- `shell/experiments/`: experiment-plan and scenario-window orchestration;
-- `shell/scenarios/`: direct automated scenario helpers;
-- `shell/tools/`: operator helper scripts;
-- `python/lab/`: template rendering and shell-facing Python helpers;
-- `python/detector/`: detector runtime sources;
-- `python/mitm/`: attacker-side MITM automation and scenario entry points;
-- `python/logs/`: artifact interpretation helpers for detector, Zeek, and Suricata outputs;
-- `python/metrics/`: run parsing, evaluation, and summary logic;
-- `python/reporting/`: dataset export, plots, tables, and markdown report builder;
-- `python/scenarios/`: scenario metadata and ordering;
-- `python/`: package root and remaining shared utilities;
-- `docs/`: topology, architecture, experiment, metric, artifact, and command reference pages;
-- `config/`: static config inputs;
-- `libvirt/`: network definitions;
-- `results/`: compact SQLite results DB, optional per-run debug artifacts, and generated reports.
-
-Default durable outputs:
-
-- `results/experiment-results.sqlite`
-  - `runs`: one row per experiment run
-  - `truth_counts`: ARP/DNS/DHCP ground-truth counts
-  - `sensor_counts`: Detector/Zeek/Suricata alert counts
-  - `trusted_authorities` and `trusted_observations`: trusted-source snooping data
-
-Per-run files are retained only when `KEEP_DEBUG_ARTIFACTS=1`. In that mode, useful outputs include:
-
-- `run-meta.json`
-- `summary.txt`
-- `evaluation-summary.txt`
-- `evaluation.json`
-- `detector/detector.delta.jsonl`
-- `detector/detector-explained.txt`
-- `pcap/sensor.pcap` when packet capture is enabled
-- `pcap/ports/{gateway,victim,attacker}.pcap` for per-switch-port captures when `PORT_PCAP_ENABLE=1`
-- `pcap/port-map.json` with the OVS/libvirt interface name used for each per-port capture
-- `pcap/wire-truth.json` for compact switch-truth counts and timing when full pcaps are pruned
-- `detector/ovs-switch-truth-snooping.txt` for compact ARP/DNS trust-violation ground truth without pcaps
-- `detector/ovs-dhcp-snooping.txt` for compact DHCP trusted-port ground truth without pcaps
-- `victim/traffic-window.txt`
-- `victim/iperf3.json`
-- `zeek/` when enabled
-- `suricata/` when enabled
-- `pcap/victim.pcap` when guest-side packet capture is enabled for debugging
-
-When reading a run summary, treat `Wire-truth attack events` and sensor alert counts differently:
-
-- `Wire-truth attack events`
-  - normalized attack evidence derived from trusted switch observations or optional packet captures
-- `Detector packet alerts`, `Zeek notices`, `Suricata alerts`
-  - raw sensor-side alert counts, which can be larger because repeated spoof packets can alert more than once
-
-By default the run cleanup drops raw per-run files after the SQLite rows are written. If you want the full raw collection for troubleshooting, run with:
-
-```bash
-KEEP_DEBUG_ARTIFACTS=1 make ...
-```
-
-## Report Generation
-
-Main evaluation flow:
-
-```bash
-make experiment-plan
-make experiment-report
-```
-
-`make experiment-report` builds one combined report from the runs stored in `results/experiment-results.sqlite`.
-
-Resume or trim a plan:
-
-```bash
-make experiment-plan ARGS="--skip 2"
-make experiment-plan ARGS="--start 11"
-make experiment-plan ARGS="--skip-scenario arp-mitm-forward"
-```
-
-Single-scenario commands with the canonical names:
-
-```bash
-make scenario-arp-poison-no-forward
-make scenario-arp-mitm-forward
 make scenario-arp-mitm-dns
 make scenario-dhcp-spoof
-make scenario-reliability-arp-mitm-dns LOSS=5
-make scenario-reliability-dhcp-spoof LOSS=5
 ```
 
-Run `make baseline` separately as the clean negative-control reference. The main experiment plan starts from attack scenarios and includes `dhcp-spoof` as the focused DHCP attack case. The thesis reliability campaign is available through `make reliability RUNS=3`; it runs ARP/DNS MITM and focused DHCP rogue-server windows from 0% to 100% NetEm packet loss. The generic `make reliability-plan` target remains available for custom packet loss, delay, jitter, rate limits, duplication, reordering, or corruption.
-
-Scenario windows use a controlled synthetic traffic probe by default: Python/Scapy emits predictable ICMP load and UDP DNS queries so the detector has stable background packets and the DNS spoofing scenarios have real queries to answer. `curl` and `iperf3` are kept as optional diagnostics rather than core evidence; use `IPERF_ENABLE=1` for scenario windows or `BASELINE_PERF_PROBES_ENABLE=1` for the baseline-only probes.
-
-The generated markdown report includes run counts, event recall, time-to-detection, alert volume, and clean-baseline alert checks, so the main workflow does not need a separate `make evaluate` command.
-
-## What Is Committed vs Generated Locally
-
-Typically committed:
-
-- source code under `python/`, `shell/`, and `config/`;
-- docs under `docs/`.
-
-Generated locally:
-
-- `generated/` cloud-init and helper assets;
-- `storage/` VM disks and downloaded base images;
-- full `results/` trees from repeated experiments;
-- regenerated report directories such as `results/experiment-report/`.
-
-## Day-To-Day Commands
+Run thesis reliability campaigns:
 
 ```bash
-make help
-make setup
-make start
-make status
-make baseline
-make smoke-test
+RUNS=3 make reliability
+RUNS=3 make reliability-arp-dns
+RUNS=3 LOSS_LEVELS="70 80 90 100" make reliability-dhcp
+```
+
+Build summaries and plots:
+
+```bash
 make summarize
 make results-db-overview
-make experiment-plan
-make reliability RUNS=3
-make reliability-plan
 make experiment-report
-make demo-ui
-make destroy
 ```
 
-Focused pipeline examples:
+Open the browser demo:
 
 ```bash
-make scenario-dhcp-spoof DURATION=30
-make scenario-reliability-arp-mitm-dns DURATION=30 LOSS=10
-make reliability RUNS=3
-RELIABILITY_LOSS_LEVELS="0 10 20" make reliability-plan
+make demo-ui
 ```
+
+## Useful Flags
+
+- `DEBUG=1`: keep raw run artifacts and pcaps that were enabled
+- `PCAP=1`: keep aggregate sensor pcap
+- `PORT_PCAP=1`: keep per-port pcaps for gateway, victim, and attacker ports
+- `GUEST_PCAP=1`: keep guest-side captures
+- `ZEEK_ENABLE=0`: disable Zeek comparator
+- `SURICATA_ENABLE=0`: disable Suricata comparator
+- `LOSS_LEVELS="0 10 20"`: choose reliability packet-loss levels
+- `RUNS=5`: repeat each selected planned scenario
+- `SCENARIOS="dhcp-spoof"`: restrict the main plan to selected scenarios
+
+Raw per-run files are pruned by default after evaluation. Durable results live in:
+
+```text
+results/experiment-results.sqlite
+results/experiment-report/
+```
+
+## Repository Map
+
+- `mk/`: grouped make targets
+- `shell/lab/`: lab lifecycle scripts
+- `shell/experiments/`: baseline, scenario-window, and campaign orchestration
+- `shell/scenarios/`: focused scenario wrappers
+- `python/detector/`: live detector
+- `python/mitm/`: attacker-side ARP/DNS/DHCP actions
+- `python/metrics/`: evaluation and SQLite result storage
+- `python/reporting/`: CSV, plot, and markdown report generation
+- `python/demo_dashboard/`: localhost demo dashboard
+- `docs/`: topology, scenarios, metrics, commands, and architecture notes
+- `results/`: SQLite database, optional debug runs, and generated report outputs
+
+## Reading Order
+
+1. [Topology](docs/topology.md)
+2. [Scenario Definitions](docs/scenario-definitions.md)
+3. [Experiments](docs/experiments.md)
+4. [Evaluation Metrics](docs/evaluation-metrics.md)
+5. [Command Reference](docs/command-reference.md)
+6. [Repo Architecture](docs/repo-architecture.md)

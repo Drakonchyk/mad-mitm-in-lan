@@ -234,6 +234,6 @@ def write_dataset(rows: list[dict[str, Any]], output_dir: Path) -> tuple[Path, P
 def clear_report_outputs(output_dir: Path) -> None:
     if not output_dir.exists():
         return
-    for pattern in ("*.png", "table-*.csv", "experiment-report.md"):
+    for pattern in ("*.png", "*.csv", "experiment-report.md"):
         for path in output_dir.glob(pattern):
             path.unlink()

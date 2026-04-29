@@ -58,7 +58,7 @@ SCENARIOS: dict[str, ScenarioDefinition] = {
     ),
     "reliability-arp-mitm-dns": ScenarioDefinition(
         name="reliability-arp-mitm-dns",
-        group="supplementary",
+        group="reliability",
         label="reliability-arp-mitm-dns",
         detector_events=frozenset({
             "gateway_mac_changed",
@@ -69,7 +69,7 @@ SCENARIOS: dict[str, ScenarioDefinition] = {
     ),
     "reliability-dhcp-spoof": ScenarioDefinition(
         name="reliability-dhcp-spoof",
-        group="supplementary",
+        group="reliability",
         label="reliability-dhcp-spoof",
         detector_events=frozenset({
             "rogue_dhcp_server_seen",
@@ -80,8 +80,8 @@ SCENARIOS: dict[str, ScenarioDefinition] = {
 }
 
 MAIN_SCENARIOS = [name for name, definition in SCENARIOS.items() if definition.group == "main"]
-SUPPLEMENTARY_SCENARIOS = [name for name, definition in SCENARIOS.items() if definition.group == "supplementary"]
-SCENARIO_ORDER_ALL = [*MAIN_SCENARIOS, *SUPPLEMENTARY_SCENARIOS]
+RELIABILITY_SCENARIOS = [name for name, definition in SCENARIOS.items() if definition.group == "reliability"]
+SCENARIO_ORDER_ALL = [*MAIN_SCENARIOS, *RELIABILITY_SCENARIOS]
 SCENARIO_LABELS = {name: definition.label for name, definition in SCENARIOS.items()}
 DETECTOR_DETECTION_EVENTS = {name: set(definition.detector_events) for name, definition in SCENARIOS.items()}
 SCENARIO_ATTACK_TYPES = {name: set(definition.attack_types) for name, definition in SCENARIOS.items()}
@@ -90,8 +90,8 @@ SCENARIO_ATTACK_TYPES = {name: set(definition.attack_types) for name, definition
 def selected_scenarios(profile: str) -> list[str]:
     if profile == "main":
         return list(MAIN_SCENARIOS)
-    if profile == "supplementary":
-        return list(SUPPLEMENTARY_SCENARIOS)
+    if profile == "reliability":
+        return list(RELIABILITY_SCENARIOS)
     return list(SCENARIO_ORDER_ALL)
 
 

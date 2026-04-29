@@ -1,0 +1,6 @@
+scenario,runs,duration_s,trusted_attack_observations_total,trusted_attack_observations_per_run,detector_alerts_total,zeek_alerts_total,suricata_alerts_total,detector_alerts_per_run,zeek_alerts_per_run,suricata_alerts_per_run
+baseline,3,,0,0.0,0,0,0,0.0,0.0,0.0
+arp-poison-no-forward,5,30.0,80,16.0,45,45,45,9.0,9.0,9.0
+arp-mitm-forward,5,30.0,217,43.4,47,47,47,9.4,9.4,9.4
+arp-mitm-dns,5,45.0,328,65.6,219,219,219,43.8,43.8,43.8
+dhcp-spoof,5,30.0,352,70.4,176,176,176,35.2,35.2,35.2

@@ -13,7 +13,6 @@ The repo uses two layers of evaluation:
 
 The goal is not only to ask whether the detector, Zeek, or Suricata alert at least once. It is also to compare:
 
-- how quickly they react;
 - what kinds of evidence they react to;
 - how many detector packet alerts are generated;
 - what operational impact is visible from the victim-side probe loop.
@@ -31,7 +30,7 @@ The main evaluation plan keeps this core attack scenario matrix:
 - `arp-mitm-dns`
   - transparent MITM with focused DNS spoofing for the monitored domain set
 - `dhcp-spoof`
-  - rogue DHCP offer and ACK broadcast behavior
+  - DHCP-spoof offer and ACK broadcast behavior
 
 Canonical command:
 
@@ -54,16 +53,17 @@ The reliability scenarios are:
 - `reliability-arp-mitm-dns`
   - the ARP/DNS attack family under NetEm-impaired sensor traffic
 - `reliability-dhcp-spoof`
-  - the rogue-DHCP attack family under NetEm-impaired sensor traffic
+  - the DHCP-spoof attack family under NetEm-impaired sensor traffic
 
 Reliability-degradation campaign:
 
 ```bash
 make reliability RUNS=3
-make reliability-plan
+LOSS_LEVELS="70 80 90 100" RUNS=3 make reliability-dhcp
+RUNS=3 make reliability-arp-dns
 ```
 
-Use `make reliability RUNS=3` for the thesis packet-loss sweep: ARP/DNS MITM and focused DHCP rogue-server detection at 0% through 100% loss in 10% steps. Use `make reliability-plan` with `RELIABILITY_LOSS_LEVELS`, `RELIABILITY_DELAY_MS`, `RELIABILITY_JITTER_MS`, and `RELIABILITY_RATE` when tuning custom packet loss, delay, jitter, or bandwidth limits.
+Use `make reliability RUNS=3` for the thesis packet-loss sweep: ARP/DNS MITM and DHCP-spoof detection at 0% through 100% loss in 10% steps. Use `LOSS_LEVELS="0 10 20"` to run selected loss levels.
 
 Typical report build:
 
@@ -81,15 +81,15 @@ The intended local full dataset is:
 - reliability evaluation:
   - reliability campaigns use `RUNS=N` repetitions per loss level
 
-To run only one scenario through the main pipeline, override `PLAN_SCENARIOS`. Example:
+To run only one scenario through the main pipeline, use `SCENARIOS`. Example:
 
 ```bash
-RUNS=5 PLAN_SCENARIOS="dhcp-spoof" make experiment-plan
+RUNS=5 SCENARIOS="dhcp-spoof" make experiment-plan
 ```
 
 ## Timing Windows
 
-Main attack scenarios use fixed windows so time-to-detection metrics are comparable.
+Main attack scenarios use fixed windows so clean, attack, and tail phases are comparable.
 
 - ARP-only attack runs:
   - `t=0..5 s`: clean prefix
@@ -112,7 +112,6 @@ The generated reports focus on:
 - run-level detection
 - attack-type coverage
 - event recall
-- time to first supported alert
 - detector packet-alert composition
 - victim-side operational metrics:
   - gateway ping latency
@@ -123,11 +122,11 @@ The generated reports focus on:
 
 Scenario windows use a synthetic Python/Scapy traffic probe by default. It produces predictable ICMP packets and UDP DNS queries, which makes the background load easier to reason about than `curl` or `iperf3`. `curl` and `iperf3` are still useful diagnostics, but they are opt-in rather than core evidence.
 
-Timing comparisons between detector, Zeek, and Suricata use the first supported ground-truth attack evidence for each tool rather than the nominal planned attack start.
+Detector, Zeek, and Suricata are compared by packet-visible recall and detection survival. Timing fields may still exist in legacy run artifacts, but they are not part of the thesis-facing report tables.
 
 The preferred ground-truth basis is the trusted observation database materialized from OVS snooping artifacts. Packet captures are optional debugging evidence: `results/<run>/pcap/sensor.pcap` keeps the mirrored switch feed, and `results/<run>/pcap/ports/` keeps gateway, victim, and attacker switch-port traffic separate when per-port capture is enabled.
 
-By default, raw per-run files are only temporary. After each run is evaluated, the durable rows are inserted into `results/experiment-results.sqlite` and raw artifacts are pruned. Set `KEEP_DEBUG_ARTIFACTS=1` when a run needs full files for packet-level debugging or report development.
+By default, raw per-run files are only temporary. After each run is evaluated, the durable rows are inserted into `results/experiment-results.sqlite` and raw artifacts are pruned. Set `DEBUG=1` when a run needs full files for packet-level debugging or report development.
 
 The full metric definition page is [Evaluation Metrics](./evaluation-metrics.md).
 
@@ -136,11 +135,9 @@ The full metric definition page is [Evaluation Metrics](./evaluation-metrics.md)
 The report focuses on the figures used in the thesis:
 
 - DNS packet recall by detector under NetEm loss
-- rogue-DHCP packet recall by detector under NetEm loss
+- DHCP-spoof packet recall by detector under NetEm loss
 - detection survival under NetEm loss
-- time-to-detection heatmaps
 - detector processed-packet-rate context
-- basic scenario timing heatmaps
 
 ## Canonical Commands
 

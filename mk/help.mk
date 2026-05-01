@@ -5,6 +5,8 @@ help:
 		'MITM Diploma Lab' \
 		'' \
 		'Targets:' \
+		'  make check      Run Python compilation and Bash syntax checks' \
+		'  make lint       Run Ruff lint checks for Python sources' \
 		'  make prereqs    Check host prerequisites and libvirt access' \
 		'  make networks   Define and start libvirt networks' \
 		'  make storage    Download base image and prepare storage pool' \

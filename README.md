@@ -61,7 +61,8 @@ Install host dependencies:
 sudo apt update
 sudo apt install qemu-kvm libvirt-daemon-system virt-manager cpu-checker \
   wireshark tshark tcpdump python3-pip python3-scapy git jq curl iperf3 dnsutils \
-  openvswitch-switch cloud-image-utils
+  openvswitch-switch cloud-image-utils python3-numpy python3-matplotlib \
+  ca-certificates gnupg software-properties-common
 sudo adduser "$USER" libvirt
 ```
 
@@ -72,6 +73,54 @@ make prereqs
 make setup
 make status
 ```
+
+The default storage path is `storage/` inside this repository. Override
+`STORAGE_ROOT` in `lab.conf` if you want VM disks somewhere else.
+
+## Comparator Tools
+
+The Detector runs from this repository. Zeek and Suricata are host-side
+comparators and are prepared lazily when a run starts, unless disabled with
+`ZEEK_ENABLE=0` or `SURICATA_ENABLE=0`.
+
+- Zeek: if `zeek` is not already on `PATH` or under `/opt/zeek/bin/zeek`, the
+  scripts add the upstream Zeek apt repository from
+  `download.opensuse.org/repositories/security:/zeek/` and install `zeek`.
+- Suricata: if `suricata` is not already on `PATH`, the scripts add
+  `ppa:oisf/suricata-stable` and install the apt package. Do not use the snap
+  package for this lab.
+
+If a comparator cannot be prepared, the run continues and records the comparator
+as unavailable in the run artifacts.
+
+## Development Tools
+
+The lab does not require a Python virtual environment for normal use. The setup,
+scenario, experiment, and report targets are designed to run with the host
+packages installed in the quick start.
+
+Use a local virtual environment only if you want isolated Python tooling for
+linting or report dependencies. On Ubuntu 24.04 and other modern Debian-based
+systems, install these tools in a venv rather than with `pip install --user`:
+
+```bash
+sudo apt install python3-venv
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+```
+
+Run lightweight repository checks:
+
+```bash
+make check
+make lint
+```
+
+`make check` only needs the standard Python and Bash tooling and is the normal
+quick sanity check. `make lint` uses Ruff from `requirements-dev.txt`, expects
+the venv above or another Ruff installation, and is optional for normal lab
+runs.
 
 ## Common Commands
 
@@ -148,6 +197,21 @@ results/experiment-report/
 - `python/demo_dashboard/`: localhost demo dashboard
 - `docs/`: topology, scenarios, metrics, commands, and architecture notes
 - `results/`: SQLite database, optional debug runs, and generated report outputs
+
+## Maintenance Notes
+
+Some orchestration files are intentionally large because they encode full lab
+workflows end to end. Good future split points are:
+
+- `shell/experiment-common.sh`: capture helpers, comparator setup, run metadata,
+  and artifact collection
+- `python/demo_dashboard/server.py`: HTTP handler, command jobs, result summaries,
+  and archive creation
+- `python/reporting/plots.py`: baseline plots, reliability plots, and timing
+  visualizations
+
+Keep behavior-preserving refactors separate from experiment changes so thesis
+results stay easy to review.
 
 ## Reading Order
 

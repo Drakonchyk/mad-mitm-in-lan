@@ -99,6 +99,9 @@ ZEEK_ENABLE=0 SURICATA_ENABLE=0 make baseline
 
 Current Suricata note:
 
+- The automation expects the apt-packaged Suricata binary. If Suricata is
+  missing, it adds `ppa:oisf/suricata-stable` and installs `suricata`.
+- Do not use the snap package for this lab.
 - On some host builds, the ARP comparison rule path is unavailable even though DHCP+DNS+ICMP comparison still works.
 - When that happens, the run summary prints `Suricata ARP coverage: ... DHCP+DNS+ICMP only`.
 

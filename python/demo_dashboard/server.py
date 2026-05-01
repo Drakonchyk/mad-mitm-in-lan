@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from lab.config import load_lab_config
 from scenarios.definitions import SCENARIOS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -72,17 +73,10 @@ DEFAULT_SCENARIO_DURATIONS = {
 
 
 def load_lab_constants() -> dict[str, str]:
-    constants: dict[str, str] = {}
     lab_conf = REPO_ROOT / "lab.conf"
     if not lab_conf.exists():
-        return constants
-    for raw_line in lab_conf.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        constants[key.strip()] = value.strip().strip('"').strip("'")
-    return constants
+        return {}
+    return load_lab_config(lab_conf)
 
 
 LAB_CONSTANTS = load_lab_constants()

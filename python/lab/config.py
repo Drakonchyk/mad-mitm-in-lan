@@ -31,7 +31,8 @@ def _expand(value: str, values: dict[str, str]) -> str:
 
 
 def load_lab_config(path: Path = LAB_CONF_PATH) -> dict[str, str]:
-    values: dict[str, str] = {}
+    path = path.resolve()
+    values: dict[str, str] = {"LAB_DIR": str(path.parent)}
 
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
